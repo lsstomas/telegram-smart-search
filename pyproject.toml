@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "telegram-smart-search"
+version = "0.1.0"
+description = "Search Telegram offer channels locally and export prices, payment terms and coupons to CSV"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+live = ["telethon>=1.30"]
+dev = ["pytest>=7", "ruff>=0.4"]
+
+[project.scripts]
+tgsearch = "tgsearch.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]

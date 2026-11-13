@@ -1,0 +1,35 @@
+{
+  "about": "Full account export (trimmed)",
+  "chats": {
+    "about": "chats",
+    "list": [
+      {
+        "name": "Promo Group",
+        "type": "private_supergroup",
+        "id": 555,
+        "messages": [
+          {
+            "id": 7,
+            "type": "message",
+            "date": "2026-10-03T08:00:00",
+            "date_unixtime": "1791014400",
+            "text": "Notebook Lenovo IdeaPad 3 voltou! De R$ 3.499 por R$ 2.799 no cartão e R$ 2.599 no Pix. Cupom LENOVO10 https://amazon.com.br/dp/B0TEST123"
+          }
+        ]
+      },
+      {
+        "name": "Alice",
+        "type": "personal_chat",
+        "id": 42,
+        "messages": [
+          {
+            "id": 3,
+            "type": "message",
+            "date": "2026-10-09T08:00:00",
+            "text": "Vi um notebook por R$ 1.500 no boleto"
+          }
+        ]
+      }
+    ]
+  }
+}

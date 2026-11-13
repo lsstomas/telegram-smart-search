@@ -1,0 +1,72 @@
+{
+  "name": "Ofertas Tech",
+  "type": "public_channel",
+  "id": 1234567890,
+  "messages": [
+    {
+      "id": 1,
+      "type": "service",
+      "date": "2026-10-01T09:00:00",
+      "date_unixtime": "1790845200",
+      "action": "create_channel",
+      "text": ""
+    },
+    {
+      "id": 10,
+      "type": "message",
+      "date": "2026-10-02T10:00:00",
+      "date_unixtime": "1790935200",
+      "text": [
+        "🔥 Notebook Lenovo IdeaPad 3\nDe R$ 3.499,00 por R$ 2.799,00\nou R$ 2.599 no Pix\n10x de R$ 279,90 sem juros\nCupom: LENOVO10\n",
+        {"type": "text_link", "text": "Comprar", "href": "https://www.amazon.com.br/dp/B0TEST123?utm_source=telegram&tag=canal-20"}
+      ]
+    },
+    {
+      "id": 11,
+      "type": "message",
+      "date": "2026-10-03T11:00:00",
+      "date_unixtime": "1791025200",
+      "text": [
+        "Notebook Lenovo IdeaPad 3 voltou! De R$ 3.499 por R$ 2.799 no cartão e R$ 2.599 no Pix. Cupom LENOVO10 ",
+        {"type": "link", "text": "https://amazon.com.br/dp/B0TEST123/?utm_campaign=x&tag=canal-20"}
+      ]
+    },
+    {
+      "id": 12,
+      "type": "message",
+      "date": "2026-10-04T12:00:00",
+      "date_unixtime": "1791115200",
+      "text": "Notebook Lenovo IdeaPad 3 baixou mais: R$ 2.399 no Pix https://amazon.com.br/dp/B0TEST123"
+    },
+    {
+      "id": 13,
+      "type": "message",
+      "date": "2026-10-05T13:00:00",
+      "date_unixtime": "1791205200",
+      "text": "SSD Kingston NV2 1TB por R$ 349,90 à vista no boleto ou 12x no cartão https://kabum.com.br/produto/123"
+    },
+    {
+      "id": 14,
+      "type": "message",
+      "date": "2026-10-06T14:00:00",
+      "date_unixtime": "1791295200",
+      "text": "Bom dia, pessoal! Hoje tem live de notebooks às 20h."
+    },
+    {
+      "id": 15,
+      "type": "message",
+      "date": "2026-10-07T15:00:00",
+      "date_unixtime": "1791385200",
+      "text": "",
+      "photo": "photos/photo_1.jpg",
+      "caption": "Notebook Acer Aspire 5 R$ 3.199 em até 10x sem juros https://magazineluiza.com.br/acer"
+    },
+    {
+      "id": 16,
+      "type": "message",
+      "date": "2026-10-08T16:00:00",
+      "date_unixtime": "1791475200",
+      "text": "=HYPERLINK(\"http://evil.example\") Notebook barato R$ 999"
+    }
+  ]
+}

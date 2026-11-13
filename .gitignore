@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+
+# Secrets and Telegram sessions: never commit these
+.env
+.env.*
+*.session
+*.session-journal
+sessions/
+
+# Local data: exports and results can contain private messages
+exports/
+result.json
+*.csv
+out/
