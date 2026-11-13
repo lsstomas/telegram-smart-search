@@ -716,30 +716,43 @@ class TopOffer:
     reposts: int  # other posts of the same deal (proven duplicates + probable reposts)
 
 
-def top_offers(analysis: Analysis, model: str, n: int = 10) -> list[TopOffer]:
-    """Cheapest distinct deals: one entry per probable-repost group, cheapest post first."""
+def _listing_day(post: Post) -> tuple:
+    """Same store, card maker and Brazilian day: the same listing, whatever the coupon combo."""
+    from .trends import local_day
+
+    title = text_key(_title(post.message.text))[:40]
+    return (post.cls.model, post.store or title, post.brand, local_day(post))
+
+
+def top_offers(
+    analysis: Analysis, model: str, n: int = 10, stores: set[str] | None = None
+) -> list[TopOffer]:
+    """Cheapest offers, one per listing and day (store, card maker, Brazilian day).
+
+    Channels post the same listing many times in a day with different coupon
+    combinations, so the cheapest post of each listing-day stands for the rest,
+    which are counted in ``reposts`` (proven duplicates included).
+    """
     dupes: dict[int, int] = defaultdict(int)
     for post in analysis.posts:
         if post.status == "duplicate" and post.duplicate_of is not None:
             dupes[id(post.duplicate_of)] += 1
-    groups: dict[int, list[Post]] = defaultdict(list)
-    singles: list[Post] = []
+    groups: dict[tuple, list[Post]] = defaultdict(list)
     for post in analysis.posts:
         if post.status != "included" or post.cls.model != model:
             continue
         if "lowest_upfront" not in post.method_prices:
             continue
-        if post.probable_group is None:
-            singles.append(post)
-        else:
-            groups[post.probable_group].append(post)
+        if stores is not None and post.store not in stores:
+            continue
+        groups[_listing_day(post)].append(post)
     offers = []
-    for post in singles:
-        offers.append(TopOffer(post, post.method_prices["lowest_upfront"], dupes[id(post)]))
     for members in groups.values():
-        first = min(members, key=lambda p: p.message.date)
+        best = min(
+            members, key=lambda p: (p.method_prices["lowest_upfront"].amount, p.message.date)
+        )
         extra = len(members) - 1 + sum(dupes[id(p)] for p in members)
-        offers.append(TopOffer(first, first.method_prices["lowest_upfront"], extra))
+        offers.append(TopOffer(best, best.method_prices["lowest_upfront"], extra))
     offers.sort(key=lambda o: (o.price.amount, o.post.message.date))
     return offers[:n]
 

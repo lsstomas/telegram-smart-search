@@ -72,16 +72,19 @@ def test_compute_groups_and_thresholds():
     assert t.stores["pichau"]["min"] == D("1650.00")
 
 
-def test_top_offers_one_per_deal():
+def test_top_offers_one_per_listing_and_day():
     offers = top_offers(_analysis(), "rx7600", 10)
+    # Mon has two kabum posts (1.799 and 1.749): the cheaper one stands for the day.
     assert [o.price.amount for o in offers] == [
         D("1650.00"),
         D("1699.00"),
         D("1749.00"),
-        D("1799.00"),
         D("1899.00"),
     ]
-    assert offers[-1].reposts == 1
+    assert offers[2].reposts == 1  # the 1.799 post the same day
+    assert offers[-1].reposts == 1  # the repost in chat B
+    only_pichau = top_offers(_analysis(), "rx7600", 10, stores={"pichau"})
+    assert [o.post.store for o in only_pichau] == ["pichau"]
 
 
 def test_html_escapes_telegram_text_and_has_no_scripts():
