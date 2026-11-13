@@ -33,6 +33,7 @@ def make_message():
 @pytest.fixture(autouse=True)
 def _no_real_telegram_env(monkeypatch, tmp_path):
     """Tests must never see real credentials or touch a real session directory."""
-    for var in ("TELEGRAM_API_ID", "TELEGRAM_API_HASH", "TGSEARCH_SESSION"):
+    for var in ("TELEGRAM_API_ID", "TELEGRAM_API_HASH", "TGSEARCH_SESSION", "TGSEARCH_CREDENTIALS"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-config"))

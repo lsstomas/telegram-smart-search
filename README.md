@@ -5,12 +5,21 @@ pricing data: current price, original ("de") price, Pix price, installments, int
 flag, payment methods, coupon code and product link. It merges reposted offers conservatively
 and writes everything to CSV.
 
-Everything runs on your machine. There are two ways to get messages in:
+On top of that it runs price studies for anything your deal channels post (`scan` and
+`report`). A study finds the chats that post the product, splits each offer's price by
+payment method, flags duplicates, and looks for when prices drop: weekdays, time of month,
+promotion dates, coupons, stores. It reports means, medians and percentiles in a local HTML
+page, with an audit trail in CSV. A built-in GPU profile (`gpu-fetch` and `gpu-report`) adds
+strict rules for the Radeon RX 7600 and the GeForce RTX 5050.
+
+Everything runs on your machine. Message text is processed only by local rules (regular
+expressions and decimal arithmetic). No AI model and no third-party service sees it. There are
+two ways to get messages in:
 
 | Mode | Source | Network | Extra deps |
 |------|--------|---------|-----------|
 | `export` | Telegram Desktop "Export chat history" JSON (`result.json`) | none | none |
-| `live` | Your own account through Telethon (MTProto) | Telegram only | `telethon` |
+| `live`, `chats`, `fetch`, `scan`, `gpu-fetch` | Your own account through Telethon (MTProto) | Telegram only | `telethon` |
 
 ## Install
 
@@ -19,7 +28,7 @@ Requires Python 3.10+.
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -e '.[dev]'        # export mode + tests
-pip install -e '.[live,dev]'   # also enables live mode
+pip install -e '.[live,dev]'   # also enables the live commands
 ```
 
 You can also run it without installing: `PYTHONPATH=src python -m tgsearch ...`
@@ -40,30 +49,145 @@ tgsearch export -f result.json ssd hd --any -x usado --since 2026-10-01 --delimi
 ### Live, from your account
 
 1. Create an API app at <https://my.telegram.org> → *API development tools*.
-2. Put the values in your environment (never in this repo):
-
-   ```bash
-   export TELEGRAM_API_ID=...
-   export TELEGRAM_API_HASH=...
-   ```
-
+2. Run `tgsearch auth` **in an interactive terminal**. It asks for the API ID and the API hash
+   (hidden input), connects, and logs in if the session is new: Telethon asks for your phone
+   number, the login code and the 2FA password in that terminal. It prints only how many
+   dialogs of each kind the account has, never names. When the connection works, the ID and
+   hash are saved to `$XDG_CONFIG_HOME/tgsearch/credentials.json` (default `~/.config`) with
+   `0600` permissions, so later commands run without asking. `--reset-credentials` asks
+   again. The environment variables `TELEGRAM_API_ID` and `TELEGRAM_API_HASH` still take
+   precedence, if you prefer not to save anything.
 3. Search one or more chats you already belong to:
 
    ```bash
    tgsearch live -c @somechannel -c https://t.me/otherchannel notebook --limit 300 -o out.csv
    ```
 
-The first run asks for your phone number and login code (Telethon's interactive login). The
-session is stored at `$XDG_DATA_HOME/tgsearch/tgsearch.session` (default
+Only `auth` (and `live` in an interactive terminal) can start a phone login. Every other
+command fails with a pointer to `tgsearch auth` when the session is not logged in, so scripts
+never block on a prompt.
+
+The session is stored at `$XDG_DATA_HOME/tgsearch/tgsearch.session` (default
 `~/.local/share/tgsearch/`), **outside the project**, in a `0700` directory. Override it with
 `--session PATH` or `TGSEARCH_SESSION`. A session file gives full access to your account, so
-treat it like a password.
+treat it like a password. Don't use the same session file on two machines at the same time:
+Telegram may revoke it (`AuthKeyDuplicatedError`), and you'd have to log in again.
 
 Telegram's server-side search takes a single string. For AND queries (the default), the tool
 sends the longest term and checks the rest locally. With `--any`, it searches each term
 separately and merges the results by message id. `--limit` applies per chat and per term.
 
-### Options (both modes)
+### Finding and archiving channels
+
+```bash
+tgsearch chats                          # every broadcast channel you belong to
+tgsearch chats 7600 RTX5050 --days 30   # chats with hits, via Telegram's global search
+tgsearch fetch 7600 5050 --discover --days 30 --archive ~/gpu.jsonl
+```
+
+`chats QUERY...` uses Telegram's global search over the chats you are in and prints hits per
+chat and query. `fetch` searches each chat again on its own, because global search results
+can be truncated. It writes the messages to a JSON Lines archive with `0600` permissions,
+under `$XDG_DATA_HOME/tgsearch/archives/` by default, so the analysis can be re-run offline.
+Private conversations are never read. Groups are left out unless you pass `--include-groups`.
+
+### Price studies for any product
+
+```bash
+tgsearch scan "air fryer" -x usada --days 90          # prints the archive path
+tgsearch report "air fryer" -x usada -a ARCHIVE.jsonl --days 90 --min-price 150
+```
+
+`scan` turns the terms into Telegram searches (with AND, the longest term is sent and the
+rest is checked locally; with `--any`, every term is sent), discovers the chats with hits,
+and reads each one. `--query` overrides the strings sent to Telegram, for spellings the terms
+don't cover. Every message goes through a **local filter before anything is stored**. To be
+kept, a message must match the terms and carry an amount. Outside broadcast channels, where
+ordinary members write, it must also link to a store. Everything else is dropped in memory and
+only counted. Supergroups are included because many deal feeds are supergroups;
+`--channels-only` skips them.
+
+`report` reads one or more archives (`-a`, repeatable; overlapping archives are merged by
+chat and message id). `--min-price` / `--max-price` set the plausible band, so accessories
+and typos stay out of the statistics. It writes to
+`$XDG_DATA_HOME/tgsearch/reports/<profile>-<time>/` (or `--out`), all files `0600`:
+
+| File | Contents |
+|------|----------|
+| `report.html` | Self-contained page (no scripts, no network): key prices, daily-low chart, cheapest distinct deals, weekday / time-of-month / promotion-date / coupon / store / brand tables |
+| `summary.md` | Mean, median, min and max per target and payment method; per-store table; exclusion counts |
+| `summary.json` | All of the above plus the trend data, machine-readable |
+| `posts.csv` | One row per post: status (`included`, `duplicate`, `excluded`), reason, the original it duplicates and how many hours later, probable-repost group, store, the price used for each method, coupons |
+| `price_points.csv` | Every amount found, with its message line, how it was read and whether it entered the statistics |
+
+**When prices drop.** Trends use each counted post's lowest single-payment price, on Brazilian
+calendar days (America/Sao_Paulo):
+
+- **Daily low:** the cheapest post of each day.
+- **Weekday and time of month** (1–7, 8–14, 15–21, 22–end): median daily low, best price,
+  and how many days reached the *good price* line, the 25th percentile of distinct deals.
+- **Promotion dates, ±1 day:** double dates (9.9, 10.10, 11.11), Consumer Day, Customer Day,
+  Children's Day, Black Friday and Cyber Monday.
+- **Price thresholds:** for each R$ 50 step, on how many days a post reached it and the
+  longest stretch without one, which is how long you might wait.
+- **Coupons:** price stated as needing the coupon, coupon code mentioned, or no coupon.
+- **Stores and brands.**
+
+Deal channels post when a price looks good, so a quiet day means no post, not a high price.
+
+### GPU profile (RX 7600 and RTX 5050)
+
+```bash
+tgsearch gpu-fetch --days 30                         # or --model rx7600 --days 90
+tgsearch gpu-report ~/.local/share/tgsearch/archives/gpu-*.jsonl --days 30
+```
+
+`gpu-fetch` and `gpu-report` are `scan` and `report` with the GPU profile
+(`--profile gpu`). The profile searches for `7600`, `RX7600`, `5050` and `RTX5050`, keeps
+amounts between R$ 700 and R$ 6,000, names the card maker, and applies strict product rules.
+`RX 7600 XT` is a different card and is not counted as an RX 7600 (target it with
+`--model rx7600xt`). `Ryzen 5 7600` is a CPU and is ignored. Posts for notebooks, complete PCs
+and CPU/motherboard combos are excluded (`category_laptop`, `category_prebuilt`,
+`category_bundle`), as are posts that name another GPU (`other_gpu_named`: list posts and
+comparisons) and posts with no recognisable card wording (`category_unknown`).
+
+**Payment methods.** Each amount is labelled from its own line:
+
+| Method | Example |
+|--------|---------|
+| `pix` | `R$ 1.599 no Pix`, `Pix: R$ 1.599` |
+| `boleto` | `R$ 1.599 no boleto` |
+| `card_1x` | `Cartão: R$ 1.699`, `💳 R$ 1.699` |
+| `installments` | `R$ 1.799 em até 10x sem juros` (stated total), `10x de R$ 179,90` (computed total 1799.00) |
+| `upfront` | `R$ 1.699 à vista` with no method named |
+| `unspecified` | `💵 R$ 1.799`, with no payment cue at all |
+
+Installments are reported as totals and split into interest-free, with interest (`com juros`,
+`1,99% a.m.`, the rate is kept) and interest not stated. Two cross-line rules apply, and only
+when the post has a single amount. If the only payment method the post names sits on a line
+without an amount (`🎟 com cupom X e pagando no pix`), the amount gets that method
+(`stated_cue_apart`). A lone `10x sem juros` line adds an interest-free installment option
+at that amount (`price_with_terms`).
+
+Amounts after `cupom de`, `off`, `desconto`, `cashback` or `frete` are discounts, not prices.
+`com cupom: R$ X` is a price that needs the coupon and is flagged `coupon_applied`. A post with
+two different amounts for the same method is left out for that method (`conflicting_amounts`),
+and amounts outside R$ 700–6,000 are left out (`implausible_amount`). Nothing is guessed
+silently: every rule leaves its mark in the CSVs. These rules apply to every study, not
+only GPUs.
+
+**Duplicates.** Two strengths, so that distinct offers are never merged:
+
+- *Proven duplicates* are merged and counted once. They are the same message read twice,
+  forwards of the same channel post, or the same normalised text or the same canonical URL
+  **with the same price signature** (every method and amount, plus coupon codes). A price
+  change, another coupon or another payment method keeps both posts.
+- *Probable reposts* are grouped, never merged. They share the model, the store, every price
+  and the coupons, and each was posted within 72 hours of the previous one in the group, with
+  different wording or affiliate links. The report shows statistics per post and per deal
+  (probable groups collapsed), so you can see how much reposting weighs on the numbers.
+
+### Options (export and live)
 
 | Option | Meaning |
 |--------|---------|
@@ -79,7 +203,7 @@ separately and merges the results by message id. `--limit` applies per chat and 
 | `--delimiter ';'` | Use `;` for spreadsheets set to a pt-BR locale, or `tab` |
 | `-q` | Don't print the summary line on stderr |
 
-## CSV columns
+## CSV columns (export and live)
 
 | Column | Description |
 |--------|-------------|
@@ -101,6 +225,7 @@ separately and merges the results by message id. `--limit` applies per chat and 
 
 Amounts use a dot as the decimal separator (`2799.00`). Cells that begin with `= + - @` get a
 leading `'` so spreadsheets won't run them as formulas, since message text comes from strangers.
+The GPU report CSVs follow the same rules.
 
 ### How prices are classified
 
@@ -116,7 +241,7 @@ Each amount is labelled from the words just before and after it, on the same lin
 - Text like "2x1" or "4x4" is not read as installments unless it has a value, "sem juros", or
   a lead-in like "em até".
 
-## Deduplication (conservative)
+## Deduplication in export and live (conservative)
 
 Deal channels repost the same offer all the time, so rows are merged, but only when the
 evidence is strong:
@@ -145,7 +270,7 @@ The earliest message is kept. Later copies increase `duplicates` and are listed 
 ## Development
 
 ```bash
-pytest           # tests use fixtures only and never touch the network or real credentials
+pytest           # fixtures and a fake Telegram client only: no network, no real credentials
 ruff check . && ruff format --check .
 ```
 
@@ -153,23 +278,56 @@ Layout:
 
 ```
 src/tgsearch/
-  cli.py          argparse entry point (tgsearch export|live)
+  cli.py          entry point: export, live, auth, chats, fetch, scan, report, gpu-fetch, gpu-report
   extract.py      price / installment / payment / coupon extraction
   dedupe.py       conservative merging
   search.py       query matching, filters, pipeline
   csv_out.py      CSV writer (formula-injection safe)
   textutil.py     normalisation, URL canonicalisation
+  credentials.py  API ID / hash: environment, then the 0600 file written by `auth`
+  archive.py      local JSON Lines archive of fetched messages (0600)
+  profiles.py     study profiles (any terms, or gpu) and the pre-storage offer filter
+  gpu.py          GPU model matching, card vs laptop / PC, card makers
+  payment.py      prices per payment method, installments, interest, coupons
+  analysis.py     studies: duplicates, probable reposts, statistics, best deals, report files
+  trends.py       daily lows, weekdays, time of month, promotion dates, thresholds
+  report_html.py  self-contained HTML report (inline SVG, no scripts)
   sources/export.py  Telegram Desktop JSON reader
-  sources/live.py    Telethon reader (lazy import, env-only credentials)
+  sources/live.py    Telethon reader: dialogs, global search, per-chat search
 tests/            pytest suite and JSON fixtures
 ```
 
 ## Privacy and secrets
 
-- Credentials are read only from environment variables, at runtime. The tool never writes them,
-  and their `repr` is masked.
-- No `.env` file is loaded. Use your shell, a password manager or `direnv` outside the repo.
-- `.gitignore` excludes `*.session`, `.env*`, `exports/`, `result.json` and `*.csv`, because
-  exports and results can contain private messages.
-- The tool doesn't phone home. The only network traffic is to Telegram, and only in `live`
-  mode.
+- Credentials are typed into your own terminal (the hash without echo), never passed as
+  arguments, which would end up in shell history. They are saved only by `tgsearch auth`, to
+  a `0600` file outside the project, and refused if anyone else can read that file. Their
+  `repr` is masked.
+- No `.env` file is loaded.
+- Sessions, archives and reports live under `~/.local/share/tgsearch/` and
+  `~/.config/tgsearch/`, never in the project. `.gitignore` also excludes `*.session`,
+  `.env*`, `exports/`, `result.json`, `*.csv`, `*.jsonl` and `out/` in case something is
+  written there by hand.
+- Access is read-only and limited to chats the account already belongs to: no joins, posts or
+  forwards. Private chats are never read. Searches go through Telethon, which waits out
+  Telegram's flood limits instead of retrying aggressively.
+- The tool doesn't phone home. The only network traffic is to Telegram, and only in the live
+  commands.
+
+## Limitations
+
+- Prices are read from what the post says. Coupon-dependent prices are flagged but not
+  verified, and short links (`amzn.to`, `s.shopee.com.br`) are never resolved, so store
+  detection falls back to store names in the text.
+- Most deal posts quote one price with no payment method (`💵 R$ 1.799`). Those stay
+  `unspecified` rather than being assumed to be Pix.
+- Telegram's search is word-based: `RX7600` and `RX 7600` are different queries, so both are
+  sent. A spelling no query covers (say `R X 7600`) is missed.
+- Probable-repost grouping needs a store, so posts with unidentified stores are never grouped.
+- How far back you can go depends on the chats: broadcast channels expose their full history,
+  but some groups hide messages from before you joined. Posting volume also changes over time,
+  so check how many days have posts before comparing periods.
+- Weekday and promotion-date tables cover a few occurrences each (13 Mondays in 90 days), so
+  read them as hints, not rules.
+- Edits made after the fetch are not seen until you fetch again. Appending a newer fetch to an
+  archive keeps the latest version of each post.

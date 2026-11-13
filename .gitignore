@@ -21,3 +21,4 @@ exports/
 result.json
 *.csv
 out/
+*.jsonl

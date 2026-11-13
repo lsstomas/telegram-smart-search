@@ -199,14 +199,21 @@ def _title(text: str) -> str:
     return ""
 
 
+def _coupon_ok(code: str) -> str | None:
+    """Accept a code written in capitals or containing a digit; reject plain words."""
+    upper = code.upper()
+    if upper in _COUPON_STOPWORDS:
+        return None
+    if code == upper or any(ch.isdigit() for ch in code):
+        return upper
+    return None
+
+
 def _coupon(text: str) -> str | None:
     for m in COUPON_RE.finditer(text):
-        code = m.group("code")
-        upper = code.upper()
-        if upper in _COUPON_STOPWORDS:
-            continue
-        if code == upper or any(ch.isdigit() for ch in code):
-            return upper
+        code = _coupon_ok(m.group("code"))
+        if code:
+            return code
     return None
 
 

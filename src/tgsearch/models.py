@@ -17,6 +17,9 @@ class Message:
     text: str
     urls: tuple[str, ...] = ()
     link: str = ""
+    chat_id: int | None = None
+    # "<channel id>:<post id>" of the original post when this message is a forward.
+    forward_ref: str = ""
 
     @property
     def ref(self) -> str:

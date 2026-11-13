@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from collections.abc import Iterable, Sequence
 from datetime import datetime, timedelta, timezone
@@ -89,6 +90,23 @@ def _add_common(p: argparse.ArgumentParser) -> None:
     p.add_argument("-q", "--quiet", action="store_true", help="no summary on stderr")
 
 
+def _add_session(p: argparse.ArgumentParser) -> None:
+    p.add_argument(
+        "--session",
+        type=Path,
+        help="Telethon session path (default: $XDG_DATA_HOME/tgsearch/tgsearch)",
+    )
+
+
+def _add_days(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--days", type=int, default=30, help="look back this many days (default 30)")
+    p.add_argument(
+        "--include-groups",
+        action="store_true",
+        help="also read supergroups and groups (default: broadcast channels only)",
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="tgsearch",
@@ -124,12 +142,117 @@ def build_parser() -> argparse.ArgumentParser:
         default=200,
         help="max messages fetched per chat and server-side term (default 200)",
     )
-    live.add_argument(
-        "--session",
-        type=Path,
-        help="Telethon session path (default: $XDG_DATA_HOME/tgsearch/tgsearch)",
-    )
+    _add_session(live)
     _add_common(live)
+
+    auth = sub.add_parser(
+        "auth", help="enter API credentials in this terminal and verify the Telegram session"
+    )
+    auth.add_argument(
+        "--reset-credentials",
+        action="store_true",
+        help="ask for the API ID and hash again even if they are already saved",
+    )
+    _add_session(auth)
+
+    chats = sub.add_parser(
+        "chats", help="list the channels this account belongs to, or the ones with search hits"
+    )
+    chats.add_argument(
+        "queries",
+        nargs="*",
+        metavar="QUERY",
+        help="Telegram search strings; with none, every channel is listed",
+    )
+    chats.add_argument("--limit", type=int, default=500, help="max global search results per query")
+    _add_days(chats)
+    _add_session(chats)
+
+    fetch = sub.add_parser(
+        "fetch", help="search channels and save matching messages to a local archive"
+    )
+    fetch.add_argument("queries", nargs="+", metavar="QUERY", help="Telegram search strings")
+    where = fetch.add_mutually_exclusive_group(required=True)
+    where.add_argument(
+        "--chat", "-c", dest="chats", action="append", help="@username, t.me link or id"
+    )
+    where.add_argument(
+        "--discover",
+        action="store_true",
+        help="use every channel that global search finds for the queries",
+    )
+    fetch.add_argument(
+        "--limit", type=int, default=300, help="max messages per chat and query (default 300)"
+    )
+    fetch.add_argument(
+        "--archive", type=Path, help="JSONL file to write (default: under $XDG_DATA_HOME)"
+    )
+    _add_days(fetch)
+    _add_session(fetch)
+
+    models = ("rx7600", "rtx5050", "rx7600xt")
+
+    def study_target(p: argparse.ArgumentParser, gpu: bool) -> None:
+        if gpu:
+            p.set_defaults(profile="gpu", terms=[], exclude=[], any_term=False)
+            p.set_defaults(min_price=None, max_price=None)
+        else:
+            p.add_argument("terms", nargs="*", metavar="TERM", help="what to look for")
+            p.add_argument("--profile", choices=("gpu",), help="built-in profile instead of terms")
+            p.add_argument("--any", dest="any_term", action="store_true", help="any term matches")
+            p.add_argument(
+                "-x", "--exclude", action="append", default=[], metavar="TERM", help="drop TERM"
+            )
+            p.add_argument("--min-price", type=_price, help="lowest plausible price")
+            p.add_argument("--max-price", type=_price, help="highest plausible price")
+        p.add_argument(
+            "--model", action="append", choices=models, help="GPU model (with the gpu profile)"
+        )
+
+    for name, gpu, help_text in (
+        ("scan", False, "find offers for any terms in your chats and save them to an archive"),
+        ("gpu-fetch", True, "scan with the GPU profile (RX 7600 / RTX 5050)"),
+    ):
+        p = sub.add_parser(name, help=help_text)
+        study_target(p, gpu)
+        p.add_argument(
+            "--query",
+            dest="queries",
+            action="append",
+            metavar="QUERY",
+            help="Telegram search string to send (default: from the terms or profile)",
+        )
+        p.add_argument("--days", type=int, default=30, help="look back this many days")
+        p.add_argument("--channels-only", action="store_true", help="skip supergroups and groups")
+        p.add_argument("--limit", type=int, default=1000, help="max messages per chat and query")
+        p.add_argument(
+            "--discover-limit", type=int, default=1000, help="max global search results per query"
+        )
+        p.add_argument("--archive", type=Path, help="JSONL file to write")
+        _add_session(p)
+
+    for name, gpu, help_text in (
+        ("report", False, "analyse archived offers: prices per payment method, trends, HTML"),
+        ("gpu-report", True, "report with the GPU profile"),
+    ):
+        p = sub.add_parser(name, help=help_text)
+        if gpu:
+            p.add_argument("archives", nargs="+", type=Path, metavar="ARCHIVE", help="JSONL file")
+        else:  # positional terms, so the archives go in an option
+            p.add_argument(
+                "-a",
+                "--archive",
+                dest="archives",
+                type=Path,
+                action="append",
+                required=True,
+                help="JSONL archive written by scan (repeatable)",
+            )
+        study_target(p, gpu)
+        p.add_argument("--days", type=int, default=30, help="window ending now (default 30)")
+        p.add_argument("--since", type=_date, help="window start (overrides --days)")
+        p.add_argument("--until", type=_date, help="window end, inclusive (default now)")
+        p.add_argument("--out", type=Path, help="report directory")
     return parser
 
 
@@ -148,14 +271,221 @@ def _messages(args: argparse.Namespace) -> Iterable[Message]:
         limit=args.limit,
         since=args.since,
         session=args.session,
+        interactive=sys.stdin.isatty(),
     )
+
+
+def _since(days: int) -> datetime:
+    return datetime.now(timezone.utc) - timedelta(days=days)
+
+
+def _cmd_auth(args: argparse.Namespace) -> int:
+    from . import credentials
+    from .sources.live import check_session
+
+    if not sys.stdin.isatty():
+        print("tgsearch: auth must run in an interactive terminal", file=sys.stderr)
+        return 2
+    path = credentials.credentials_path()
+    creds = (
+        None
+        if args.reset_credentials
+        else (credentials.credentials_from_env() or credentials.load_saved(path))
+    )
+    entered = creds is None
+    if entered:
+        creds = credentials.prompt()
+    counts = check_session(args.session, interactive=True, creds=creds)
+    if entered:
+        credentials.save(creds, path)
+        print(f"Credentials saved to {path} (mode 0600).")
+    print(
+        "Session is authorised. Dialogs: "
+        f"{counts['channel']} channels, {counts['supergroup']} supergroups, "
+        f"{counts['group']} groups, {counts['user']} private chats (not read)."
+    )
+    return 0
+
+
+def _cmd_chats(args: argparse.Namespace) -> int:
+    from .sources.live import discover_chats, list_chats
+
+    out = sys.stdout
+    if not args.queries:
+        for chat in list_chats(args.session, include_groups=args.include_groups):
+            name = f"@{chat.username}" if chat.username else ""
+            print(f"{chat.id}\t{chat.kind}\t{name}\t{chat.title}", file=out)
+        return 0
+    hits = discover_chats(
+        args.queries,
+        since=_since(args.days),
+        limit=args.limit,
+        include_groups=args.include_groups,
+        session=args.session,
+    )
+    print("hits\tlatest\tid\tkind\tusername\ttitle\tper_query", file=out)
+    for hit in hits:
+        chat = hit.chat
+        latest = hit.latest.date().isoformat() if hit.latest else ""
+        per = ";".join(f"{q}={n}" for q, n in hit.hits.items())
+        name = f"@{chat.username}" if chat.username else ""
+        print(f"{hit.total}\t{latest}\t{chat.id}\t{chat.kind}\t{name}\t{chat.title}\t{per}")
+    return 0
+
+
+def _cmd_fetch(args: argparse.Namespace) -> int:
+    from .archive import default_archive_dir, write_archive
+    from .sources.live import discover_and_fetch, fetch_messages
+
+    since = _since(args.days)
+    if args.discover:
+        hits, messages, _ = discover_and_fetch(
+            args.queries,
+            since=since,
+            limit=args.limit,
+            include_groups=args.include_groups,
+            session=args.session,
+        )
+        print(f"global search found {len(hits)} chats with hits", file=sys.stderr)
+    else:
+        messages = fetch_messages(
+            args.chats,
+            args.queries,
+            any_term=True,
+            limit=args.limit,
+            since=since,
+            session=args.session,
+        )
+    path = args.archive or (
+        default_archive_dir() / f"fetch-{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}.jsonl"
+    )
+    count = write_archive(messages, path)
+    chats = len({m.chat_id or m.chat for m in messages})
+    print(f"wrote {count} messages from {chats} chats to {path}", file=sys.stderr)
+    return 0
+
+
+def _profile(args: argparse.Namespace):
+    from .profiles import gpu_profile, terms_profile
+
+    if args.profile == "gpu":
+        return gpu_profile(args.model or ("rx7600", "rtx5050"))
+    if args.model:
+        raise ValueError("--model needs --profile gpu")
+    plausible = None
+    if args.min_price is not None or args.max_price is not None:
+        plausible = (args.min_price or Decimal("0.01"), args.max_price or Decimal("1e12"))
+    return terms_profile(
+        args.terms, exclude=args.exclude, any_term=args.any_term, plausible=plausible
+    )
+
+
+def _cmd_scan(args: argparse.Namespace) -> int:
+    from .archive import default_archive_dir, write_archive
+    from .profiles import mentions, offer_filter
+    from .sources.live import discover_and_fetch
+
+    profile = _profile(args)
+    hits, messages, stats = discover_and_fetch(
+        args.queries or profile.queries,
+        since=_since(args.days),
+        limit=args.limit,
+        discover_limit=args.discover_limit,
+        include_groups=not args.channels_only,
+        discover_accept=mentions(profile),
+        accept=offer_filter(profile),
+        session=args.session,
+    )
+    path = args.archive or (
+        default_archive_dir() / f"{profile.name}-{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}.jsonl"
+    )
+    write_archive(messages, path)
+    print(
+        f"{len(hits)} chats with hits; read {stats.read} search results, kept "
+        f"{stats.kept} offer-like posts, dropped {stats.dropped} without storing them",
+        file=sys.stderr,
+    )
+    print(path)
+    return 0
+
+
+def _cmd_report(args: argparse.Namespace) -> int:
+    from .analysis import analyse, write_report
+    from .archive import read_archive
+
+    profile = _profile(args)
+    now = datetime.now(timezone.utc)
+    since = args.since or now - timedelta(days=args.days)
+    until = args.until + timedelta(days=1) if args.until else now
+    # Overlapping archives hold the same posts; keep one copy, the latest fetched.
+    unique = {}
+    for message in chain.from_iterable(read_archive(p) for p in args.archives):
+        unique[(message.chat_id or message.chat, message.message_id)] = message
+    analysis = analyse(unique.values(), profile=profile, since=since, until=until)
+    out = (
+        args.out
+        or Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share")
+        / "tgsearch"
+        / "reports"
+        / f"{profile.name}-{now:%Y%m%dT%H%M%SZ}"
+    )
+    data = write_report(analysis, out)
+    counts = data["counts"]
+    print(
+        f"{counts['target_posts']} target posts: "
+        + ", ".join(f"{k} {v}" for k, v in sorted(counts["status"].items())),
+        file=sys.stderr,
+    )
+    print(out / "report.html")
+    return 0
+
+
+_LIVE_COMMANDS = {
+    "auth": _cmd_auth,
+    "chats": _cmd_chats,
+    "fetch": _cmd_fetch,
+    "scan": _cmd_scan,
+    "gpu-fetch": _cmd_scan,
+}
+
+
+def _run_live_command(args: argparse.Namespace) -> int:
+    from .credentials import LiveConfigError
+
+    try:
+        return _LIVE_COMMANDS[args.command](args)
+    except LiveConfigError as exc:
+        print(f"tgsearch: {exc}", file=sys.stderr)
+        return 2
+    except KeyboardInterrupt:
+        print("tgsearch: interrupted", file=sys.stderr)
+        return 130
+    except Exception as exc:  # Telethon RPC errors; never print request payloads
+        if type(exc).__module__.startswith("telethon"):
+            print(f"tgsearch: Telegram error: {type(exc).__name__}: {exc}", file=sys.stderr)
+            return 1
+        raise
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    if args.command == "live" and args.limit <= 0:
+    if getattr(args, "limit", 1) <= 0:
         parser.error("--limit must be positive")
+    if getattr(args, "days", 1) <= 0:
+        parser.error("--days must be positive")
+    if args.command in _LIVE_COMMANDS:
+        try:
+            return _run_live_command(args)
+        except ValueError as exc:
+            print(f"tgsearch: {exc}", file=sys.stderr)
+            return 2
+    if args.command in ("report", "gpu-report"):
+        try:
+            return _cmd_report(args)
+        except (OSError, ValueError) as exc:
+            print(f"tgsearch: {exc}", file=sys.stderr)
+            return 1
 
     until = args.until + timedelta(days=1) if args.until else None
     if args.until and (args.until.hour or args.until.minute or args.until.second):
@@ -170,7 +500,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         include_unpriced=args.include_unpriced,
     )
 
-    from .sources.live import LiveConfigError
+    from .credentials import LiveConfigError
 
     try:
         offers, stats = run_search(
