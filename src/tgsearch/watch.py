@@ -735,7 +735,11 @@ async def run_live(chats: Sequence[str], state: Path, session: Path | None) -> N
                             print(f"watch-live heartbeat error: {exc}", file=sys.stderr, flush=True)
                         last_beat = now_mono
 
-                    job = promo_jobs.claim_next(db)
+                    try:
+                        job = promo_jobs.claim_next(db)
+                    except sqlite3.OperationalError as exc:
+                        print(f"watch-live job poll error: {exc}", file=sys.stderr, flush=True)
+                        job = None
                     if job is not None:
                         job_id, job_kind, payload = job
                         await _handle_job(client, db, job_id, job_kind, payload)

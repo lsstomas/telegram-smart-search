@@ -54,6 +54,9 @@ def is_live_watcher_active(db: sqlite3.Connection, now: int | None = None) -> bo
 
 
 def claim_next(db: sqlite3.Connection) -> tuple[int, str, dict] | None:
+    peek = db.execute("SELECT 1 FROM promo_jobs WHERE status = 'pending' LIMIT 1").fetchone()
+    if peek is None:
+        return None
     with db:
         db.execute("BEGIN IMMEDIATE")
         row = db.execute(

@@ -373,6 +373,7 @@ def _run_history_lookup(
             **HTML_OPTS,
         )
         return
+    db.commit()
     try:
         entries = promo_history.search_history(
             state_path,
@@ -511,6 +512,7 @@ def _show_channels(
             raw = promo_history.read_sources(sources_file)
             channels = [promo_history.ChannelEntry(r, r, "", "channel") for r in raw]
         else:
+            db.commit()
             try:
                 channels = promo_history.list_monitored_channels(
                     state_path,
@@ -567,6 +569,7 @@ def _prompt_new_alert_confirmation(
         **HTML_OPTS,
     )
     mid = loading["message_id"]
+    db.commit()
     suggestion = promo_ai.suggest_filters(label, ceiling_cents)
 
     if suggestion is not None:
@@ -671,6 +674,7 @@ def _suggest_filters_for_existing(
         message_id=message_id,
         **HTML_OPTS,
     )
+    db.commit()
     suggestion = promo_ai.suggest_filters(alert.label, alert.ceiling)
     if suggestion is None:
         filter_menu(
