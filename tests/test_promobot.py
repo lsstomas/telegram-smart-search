@@ -403,12 +403,13 @@ class PromoBotTests(unittest.TestCase):
         )
         self.assertEqual(len(chunks), 1)
         body = chunks[0]
-        self.assertIn("Dentro do teto (1)", body)
+        self.assertIn("DENTRO DO TETO (1)", body)
         self.assertIn("<blockquote>🏆 <b>R$ 4.399,00</b>", body)
-        self.assertIn("2 posts", body)
-        self.assertIn("<blockquote expandable>📊 <b>Acima do teto", body)
-        # R$ 5.030,00 and R$ 5.030,28 above ceiling merge into 1 entry
-        self.assertIn("1 menores (de 1)", body)
+        self.assertIn("Posts (2):", body)
+        self.assertIn("Canal A", body)
+        self.assertIn("Canal B", body)
+        self.assertIn("ACIMA DO TETO · 1 menores (de 1)", body)
+        self.assertIn("<blockquote expandable>", body)
 
         # Menu flow: hist_new & home_new always send NEW messages (message_id=None)
         promo_menu.handle_action(self.db, self.bot, "hist_new", 20)

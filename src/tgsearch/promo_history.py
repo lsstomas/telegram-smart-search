@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
+import unicodedata
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -27,6 +29,8 @@ BRT = ZoneInfo("America/Sao_Paulo")
 MAX_HTML_CHARS = 3700
 MAX_UNDER_CEILING = 12
 MAX_ABOVE_CEILING = 5
+MAX_POSTS_PER_CARD = 15
+DIVIDER = "━━━━━━━━━━━━━━━━━━"
 
 
 @dataclass
@@ -43,6 +47,18 @@ class ChannelEntry:
     title: str
     username: str
     kind: str
+
+
+def clean_channel_label(title: str) -> str:
+    """Strip noisy decorative emojis and repeated dashes from channel titles."""
+    cleaned = "".join(
+        c
+        for c in title
+        if unicodedata.category(c) not in {"So", "Cf"} and c not in {"\ufe0f", "\u200d"}
+    )
+    cleaned = re.sub(r"--+", " ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" -|/:·•[]")
+    return (cleaned or title.strip())[:45]
 
 
 def resolve_sources_file(sources_file: Path | None) -> Path | None:
@@ -93,7 +109,6 @@ def group_history_entries(entries: Sequence[HistoryEntry]) -> list[HistoryEntry]
     """Merge duplicate reposts of the same (offer_key, rounded_price) keeping all source links."""
     grouped: dict[tuple[str, int], HistoryEntry] = {}
     for entry in entries:
-        # Bucket by whole reais when above ceiling so R$ 5.030,00 and R$ 5.030,28 merge cleanly.
         price_bucket = (
             entry.offer.price if entry.within_ceiling else (entry.offer.price // 100) * 100
         )
@@ -156,9 +171,9 @@ def _format_card(entry: HistoryEntry, *, best: bool, show_title: bool) -> str:
 
     details: list[str] = []
     if offer.payment_method and offer.payment_method != "Não informada":
-        details.append(f"💳 {escape(offer.payment_method)}")
+        details.append(f"💳 Pagamento: {escape(offer.payment_method)}")
     if offer.installments:
-        details.append(f"🧾 {escape(offer.installments)}")
+        details.append(f"🧾 Parcelas: {escape(offer.installments)}")
     if offer.coupons:
         codes = ", ".join(f"<code>{escape(c)}</code>" for c in offer.coupons)
         details.append(f"🎟️ Cupom: {codes}")
@@ -168,44 +183,59 @@ def _format_card(entry: HistoryEntry, *, best: bool, show_title: bool) -> str:
         )
         details.append(f"🚚 {freight}")
     if offer.seller:
-        details.append(f"🏷️ {escape(offer.seller[:60])}")
+        details.append(f"🏷️ Vendedor: {escape(offer.seller[:60])}")
     details.append(f"🕒 {dt_str}")
 
-    action_parts: list[str] = []
-    buy = promo_delivery.link(offer.buy_url, "Abrir oferta") if offer.buy_url else ""
-    if buy:
-        action_parts.append(f"🛒 {buy}")
-    valid_posts = [url for url in offer.posts if promo_delivery.valid_url(url)]
-    if valid_posts:
-        count = len(valid_posts)
-        post_label = "1 post" if count == 1 else f"{count} posts"
-        action_parts.append(f"🔗 {promo_delivery.link(valid_posts[0], post_label)}")
-
     sections = [head, "\n".join(details)]
-    if action_parts:
-        sections.append(" · ".join(action_parts))
+
+    if offer.buy_url and promo_delivery.valid_url(offer.buy_url):
+        sections.append(f"🛒 {promo_delivery.link(offer.buy_url, 'Abrir oferta')}")
+
+    valid_posts = [
+        (url, clean_channel_label(title))
+        for url, title in offer.posts.items()
+        if promo_delivery.valid_url(url)
+    ]
+    if valid_posts:
+        visible = valid_posts[:MAX_POSTS_PER_CARD]
+        post_lines = [f"🔗 <b>Posts ({len(valid_posts)}):</b>"]
+        for url, label in visible:
+            post_lines.append(f"• {promo_delivery.link(url, label)}")
+        extra = len(valid_posts) - len(visible)
+        if extra:
+            post_lines.append(f"• <i>+{extra} posts</i>")
+        sections.append("\n".join(post_lines))
+
     return "<blockquote>" + "\n\n".join(sections) + "</blockquote>"
 
 
-def _format_above_line(entry: HistoryEntry, *, show_title: bool) -> str:
+def _format_above_item(entry: HistoryEntry, *, show_title: bool) -> str:
     offer = entry.offer
+    dt_str = entry.seen_at.astimezone(BRT).strftime("%d/%m %H:%M")
     store = promo_delivery.store_display(offer.store) or "Loja"
-    parts = [f"<b>{promo_delivery.money(offer.price)}</b>"]
+    top_parts = [f"<b>{promo_delivery.money(offer.price)}</b>", escape(store)]
     if show_title:
-        parts.insert(0, f"<b>{escape(offer.title)}</b>")
-    store_str = escape(store)
+        top_parts.insert(0, f"<b>{escape(offer.title)}</b>")
     if offer.payment_method and offer.payment_method != "Não informada":
-        store_str += f" ({escape(offer.payment_method)})"
-    parts.append(store_str)
+        top_parts.append(escape(offer.payment_method))
     if offer.coupons:
-        parts.append(", ".join(f"<code>{escape(c)}</code>" for c in offer.coupons))
+        top_parts.append(", ".join(f"<code>{escape(c)}</code>" for c in offer.coupons))
+
+    links: list[str] = [f"🕒 {dt_str}"]
     if offer.buy_url and promo_delivery.valid_url(offer.buy_url):
-        parts.append(promo_delivery.link(offer.buy_url, "Abrir"))
-    else:
-        valid_posts = [url for url in offer.posts if promo_delivery.valid_url(url)]
-        if valid_posts:
-            parts.append(promo_delivery.link(valid_posts[0], "Post"))
-    return "• " + " · ".join(parts)
+        links.append(f"🛒 {promo_delivery.link(offer.buy_url, 'Abrir oferta')}")
+    valid_posts = [
+        (url, clean_channel_label(title))
+        for url, title in offer.posts.items()
+        if promo_delivery.valid_url(url)
+    ]
+    if valid_posts:
+        post_refs = [promo_delivery.link(url, label) for url, label in valid_posts[:3]]
+        extra = len(valid_posts) - len(post_refs)
+        suffix = f" (+{extra})" if extra else ""
+        links.append("🔗 " + " · ".join(post_refs) + suffix)
+
+    return "• " + " · ".join(top_parts) + "\n  " + " · ".join(links)
 
 
 def render_digest(
@@ -220,35 +250,48 @@ def render_digest(
     under = [e for e in grouped if e.within_ceiling]
     above = [e for e in grouped if not e.within_ceiling]
 
-    sub = f"🗓️ {escape(period_label.capitalize())}"
+    header_lines = [
+        "🔎 <b>HISTÓRICO DE OFERTAS</b>",
+        "",
+        f"📦 <b>Produto:</b> {escape(title)}",
+        f"🗓️ <b>Período:</b> {escape(period_label.capitalize())}",
+    ]
     if ceiling is not None and not multi_product:
-        sub += f" · 🎯 Teto: <b>{promo_delivery.money(ceiling)}</b>"
-    header = f"🔎 <b>{escape(title)}</b>\n{sub}"
+        header_lines.append(f"🎯 <b>Teto:</b> {promo_delivery.money(ceiling)}")
+    header = "\n".join(header_lines)
 
     if not grouped:
         return [
-            f"{header}\n\n"
+            f"{header}\n\n{DIVIDER}\n\n"
             "<blockquote>Nenhuma promoção encontrada nos canais monitorados "
             "nesse período.</blockquote>"
         ]
 
     blocks: list[str] = [header]
+
     if under:
-        blocks.append(f"✅ <b>Dentro do teto ({len(under)})</b>")
+        blocks.append(f"{DIVIDER}\n✅ <b>DENTRO DO TETO ({len(under)})</b>")
         for idx, entry in enumerate(under[:MAX_UNDER_CEILING]):
             blocks.append(_format_card(entry, best=(idx == 0), show_title=multi_product))
         if len(under) > MAX_UNDER_CEILING:
             extra = len(under) - MAX_UNDER_CEILING
             blocks.append(f"<i>… e mais {extra} ofertas dentro do teto.</i>")
     else:
-        blocks.append("ℹ️ <b>Nenhuma oferta dentro do seu teto nesse período.</b>")
+        blocks.append(
+            f"{DIVIDER}\nℹ️ <b>DENTRO DO TETO (0)</b>\n\n"
+            "<blockquote>Nenhuma oferta ficou dentro do seu teto nesse período.</blockquote>"
+        )
 
     if above:
-        limit = MAX_ABOVE_CEILING
-        shown = above[:limit]
-        above_lines = [f"📊 <b>Acima do teto · {len(shown)} menores (de {len(above)})</b>"]
-        above_lines.extend(_format_above_line(e, show_title=multi_product) for e in shown)
-        blocks.append("<blockquote expandable>" + "\n\n".join(above_lines) + "</blockquote>")
+        shown = above[:MAX_ABOVE_CEILING]
+        section_head = (
+            f"{DIVIDER}\n📊 <b>ACIMA DO TETO · {len(shown)} menores (de {len(above)})</b>"
+        )
+        above_body = "\n\n".join(_format_above_item(e, show_title=multi_product) for e in shown)
+        blocks.append(
+            f"{section_head}\n\n"
+            f"<blockquote expandable>Toque para expandir:\n\n{above_body}</blockquote>"
+        )
 
     messages: list[str] = []
     current = ""
@@ -274,7 +317,7 @@ def render_channels(channels: Sequence[ChannelEntry]) -> list[str]:
 
     lines: list[str] = []
     for idx, ch in enumerate(channels, start=1):
-        label = escape(ch.title[:55])
+        label = escape(clean_channel_label(ch.title))
         if ch.username:
             href = f"https://t.me/{escape(ch.username, quote=True)}"
             item = f'{idx}. <a href="{href}">{label}</a> · @{escape(ch.username)}'
@@ -381,7 +424,7 @@ async def _fetch_channels(
                 username = ""
                 kind = "channel"
             result.append(ChannelEntry(raw=raw, title=title, username=username, kind=kind))
-    return sorted(result, key=lambda c: c.title.casefold())
+    return sorted(result, key=lambda c: clean_channel_label(c.title).casefold())
 
 
 def search_history(
