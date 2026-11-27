@@ -676,6 +676,44 @@ def handle(
         put(db, "step", "")
         bot.message("⚡ PromoBot\n\nO que você quer fazer?", reply_markup=HOME)
         return
+    if cmd == "/alertas":
+        put(db, "step", "")
+        items = alerts(db)
+        if not items:
+            bot.message(
+                "📋 Meus alertas\n\nVocê ainda não tem alertas cadastrados.",
+                reply_markup=keyboard((("➕ Novo alerta", "new"),), (("Voltar", "home"),)),
+            )
+            return
+        rows = [
+            ((f"{'⏸ ' if a.paused else '✅ '}{a.label} · {money(a.ceiling)}", f"view:{a.id}"),)
+            for a in items
+        ]
+        rows.append((("Voltar", "home"),))
+        bot.message(
+            (
+                "📋 Meus alertas\n\n"
+                "Escolha um produto para editar teto, pausar, filtrar ou ver histórico:"
+            ),
+            reply_markup=keyboard(*rows),
+        )
+        return
+    if cmd == "/historico":
+        put(db, "step", "")
+        _send_history_picker(db, bot, None)
+        return
+    if cmd == "/canais":
+        put(db, "step", "")
+        _show_channels(
+            db,
+            bot,
+            None,
+            force_refresh=False,
+            state_path=state_path,
+            sources_file=sources_file,
+            session=session,
+        )
+        return
     step = get(db, "step")
     if step == "product":
         if len(text) > 80 or "\n" in text or not normalize(text):
@@ -923,8 +961,10 @@ def run(
                     bot.call(
                         "setMyCommands",
                         commands=[
-                            {"command": "menu", "description": "Abrir menu"},
-                            {"command": "start", "description": "Iniciar PromoBot"},
+                            {"command": "menu", "description": "Abrir menu principal"},
+                            {"command": "alertas", "description": "Meus alertas"},
+                            {"command": "historico", "description": "Buscar histórico"},
+                            {"command": "canais", "description": "Canais monitorados"},
                         ],
                     )
                     registered = True

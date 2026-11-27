@@ -270,7 +270,7 @@ def render_digest(
 
     if not grouped:
         msg = (
-            f"{header}\n\n\n"
+            f"{header}\n\n"
             "<blockquote>Nenhuma promoção encontrada nos canais monitorados "
             "nesse período.</blockquote>"
         )
@@ -281,7 +281,7 @@ def render_digest(
     under_count = len(under)
     under_word = "oferta" if under_count == 1 else "ofertas"
     if under:
-        blocks.append(f"\n✅ <b>DENTRO DO TETO</b> · {under_count} {under_word}")
+        blocks.append(f"✅ <b>DENTRO DO TETO</b> · {under_count} {under_word}")
         for idx, entry in enumerate(under[:MAX_UNDER_CEILING]):
             blocks.append(format_offer_card(entry, best=(idx == 0), show_title=multi_product))
         if under_count > MAX_UNDER_CEILING:
@@ -289,7 +289,7 @@ def render_digest(
             blocks.append(f"<i>… e mais {extra} ofertas dentro do teto.</i>")
     else:
         blocks.append(
-            "\n✅ <b>DENTRO DO TETO</b> · 0 ofertas\n\n"
+            "✅ <b>DENTRO DO TETO</b> · 0 ofertas\n\n"
             "<blockquote>Nenhuma oferta ficou dentro do seu teto nesse período.</blockquote>"
         )
 
@@ -298,7 +298,7 @@ def render_digest(
         above_word = "oferta" if above_count == 1 else "ofertas"
         lowest = promo_delivery.money(above[0].offer.price)
         blocks.append(
-            f"\n📊 <b>ACIMA DO TETO</b> · {above_count} {above_word} (menor: <b>{lowest}</b>)"
+            f"❌ <b>ACIMA DO TETO</b> · {above_count} {above_word} (menor: <b>{lowest}</b>)"
         )
 
     return _paginate_blocks(blocks), above
@@ -320,7 +320,7 @@ def render_above_page(
     end_num = offset + len(page)
 
     header_lines = [
-        "📊 <b>OFERTAS ACIMA DO TETO</b>",
+        "❌ <b>OFERTAS ACIMA DO TETO</b>",
         "",
         f"📦 <b>Produto:</b> {escape(title)}",
         f"🗓️ <b>Período:</b> {escape(period_label.capitalize())}",
@@ -329,7 +329,7 @@ def render_above_page(
         header_lines.append(f"🎯 <b>Teto:</b> {promo_delivery.money(ceiling)}")
     header_lines.append(f"📄 <b>Mostrando:</b> {start_num} a {end_num} de {len(above)}")
 
-    blocks = ["\n".join(header_lines) + "\n"]
+    blocks = ["\n".join(header_lines)]
     for idx, entry in enumerate(page):
         blocks.append(
             format_offer_card(entry, best=(offset == 0 and idx == 0), show_title=multi_product)
