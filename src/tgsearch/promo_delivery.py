@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
+import unicodedata
 from dataclasses import asdict, dataclass, field
 from decimal import Decimal
 from html import escape
@@ -131,6 +133,17 @@ def store_display(store: str) -> str:
     return STORE_DISPLAY.get(store.casefold(), store)
 
 
+def clean_post_label(title: str) -> str:
+    cleaned = "".join(
+        c
+        for c in title
+        if unicodedata.category(c) not in {"So", "Cf"} and c not in {"\ufe0f", "\u200d"}
+    )
+    cleaned = re.sub(r"--+", " ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" -|/:·•[]")
+    return (cleaned or title.strip())[:45]
+
+
 def valid_url(url: str) -> bool:
     return urlsplit(url).scheme in {"https", "http"} and len(url) <= 1000
 
@@ -194,15 +207,15 @@ def render(offer: Offer, previous: int | None) -> str:
 
     sections.append(price_lines)
 
-    references = [link(url, title) for url, title in offer.posts.items()]
+    references = [link(url, clean_post_label(title)) for url, title in offer.posts.items()]
     references = [reference for reference in references if reference]
     if references:
         visible = references[:MAX_VISIBLE_POSTS]
-        post_lines = ["🔗 Posts de origem:"]
+        post_lines = [f"<b>Posts ({len(references)}):</b>"]
         post_lines.extend(f"• {ref}" for ref in visible)
         remainder = len(references) - len(visible)
         if remainder:
-            post_lines.append(f"• +{remainder} posts")
+            post_lines.append(f"• <i>+{remainder} posts</i>")
         sections.append(post_lines)
 
     return "\n\n".join("\n".join(section) for section in sections)

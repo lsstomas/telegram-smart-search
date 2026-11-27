@@ -414,12 +414,12 @@ class PromoBotTests(unittest.TestCase):
         self.assertIn("Posts (2):", body)
         self.assertIn("Canal A", body)
         self.assertIn("Canal B", body)
-        self.assertIn("ACIMA DO TETO</b> · 1 oferta (menor: <b>R$ 5.030,00</b>)", body)
+        self.assertIn("FORA DO TETO</b> · 1 oferta (menor: <b>R$ 5.030,00</b>)", body)
         above_chunks, rem = promo_history.render_above_page(
             "iPhone 17 256 GB", "últimas 24 horas", above, offset=0, ceiling=495000
         )
         self.assertEqual(rem, 0)
-        self.assertIn("OFERTAS ACIMA DO TETO", above_chunks[0])
+        self.assertIn("OFERTAS FORA DO TETO", above_chunks[0])
         self.assertIn("R$ 5.030,00", above_chunks[0])
 
         # Menu flow: hist_new & home_new always send NEW messages (message_id=None)
@@ -486,7 +486,7 @@ class PromoBotTests(unittest.TestCase):
                 self.bot,
                 {"message": {"chat": {"type": "private", "id": 123}, "text": "1800"}},
             )
-            self.assertIn("Filtros sugeridos (IA)", self.bot.messages[-1][0])
+            self.assertIn("Filtros sugeridos pela IA", self.bot.messages[-1][0])
             promo_menu.handle_action(self.db, self.bot, "confirm_ai", 61)
             created = next(a for a in promo_menu.alerts(self.db) if a.label == "Ryzen 7 5800X3D")
             cfg = created.filter_config()

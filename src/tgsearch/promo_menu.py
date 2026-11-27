@@ -54,6 +54,7 @@ PURE_TEXT_FILTERS = {
 }
 CHANNELS_CACHE_SECONDS = 6 * 3600
 MAX_SAVED_SEARCHES = 6
+HTML_OPTS = {"parse_mode": "HTML", "link_preview_options": {"is_disabled": True}}
 
 
 @dataclass(frozen=True)
@@ -131,41 +132,87 @@ def keyboard(*rows):
 
 HOME = keyboard(
     (("➕ Novo alerta", "new"), ("📋 Meus alertas", "list")),
-    (("🔎 Buscar histórico", "hist"),),
+    (("🕒 Buscar histórico", "hist"),),
     (("📡 Canais monitorados", "channels"),),
 )
-BACK = keyboard((("Voltar", "home"),))
+BACK = keyboard((("↩️ Voltar", "home"),))
+
+
+def _send_home(bot: Bot, message_id: int | None = None) -> None:
+    bot.message(
+        "⚡ <b>PROMOBOT</b>\n\nO que você quer fazer?",
+        message_id=message_id,
+        reply_markup=HOME,
+        **HTML_OPTS,
+    )
+
+
+def _send_alerts_list(db: sqlite3.Connection, bot: Bot, message_id: int | None) -> None:
+    items = alerts(db)
+    if not items:
+        bot.message(
+            "<b>MEUS ALERTAS</b>\n\nVocê ainda não tem alertas cadastrados.",
+            message_id=message_id,
+            reply_markup=keyboard((("➕ Novo alerta", "new"),), (("↩️ Voltar", "home"),)),
+            **HTML_OPTS,
+        )
+        return
+    active_count = sum(1 for a in items if not a.paused)
+    paused_count = len(items) - active_count
+    subtitle = f"{active_count} ativo{'s' if active_count != 1 else ''}"
+    if paused_count:
+        subtitle += f" · {paused_count} pausado{'s' if paused_count != 1 else ''}"
+    rows = [
+        ((f"{'⏸ ' if a.paused else '✅ '}{a.label} · {money(a.ceiling)}", f"view:{a.id}"),)
+        for a in items
+    ]
+    rows.append((("➕ Novo alerta", "new"), ("↩️ Voltar", "home")))
+    bot.message(
+        f"<b>MEUS ALERTAS ({len(items)})</b>\n"
+        f"<i>{subtitle}</i>\n\n"
+        "Escolha um produto para gerenciar:",
+        message_id=message_id,
+        reply_markup=keyboard(*rows),
+        **HTML_OPTS,
+    )
 
 
 def _filter_summary(alert: Alert) -> str:
     cfg = alert.filter_config()
     mode_label = "Inteligente" if cfg["mode"] == "smart" else "Texto puro / Amplo"
-    lines = [f"⚙️ Filtros · {alert.label}", "", f"• Modo: {mode_label}"]
-    lines.append(f"• Bloquear usados/vitrine: {'Sim' if cfg['block_used'] else 'Não'}")
+    min_p = int(cfg.get("min_price") or 0)
+    inc = escape(", ".join(cfg["include"])) if cfg["include"] else "nenhuma"
+    exc = escape(", ".join(cfg["exclude"])) if cfg["exclude"] else "nenhuma"
+
+    lines = [
+        f"• <b>Modo:</b> {mode_label}",
+        f"• <b>Bloquear usados/vitrine:</b> {'Sim' if cfg['block_used'] else 'Não'}",
+    ]
     if alert.product in {"17", "17e"}:
         lines.append(
-            f"• Bloquear cashback/troca/plano: {'Sim' if cfg['block_restrictions'] else 'Não'}"
+            f"• <b>Bloquear cashback/troca:</b> {'Sim' if cfg['block_restrictions'] else 'Não'}"
         )
-        lines.append(f"• Exigir palavra 'lacrado': {'Sim' if cfg['require_sealed'] else 'Não'}")
-    lines.append(f"• Exigir link de loja: {'Sim' if cfg['require_url'] else 'Não'}")
-    min_p = int(cfg.get("min_price") or 0)
-    lines.append(f"• Preço mínimo: {money(min_p) if min_p > 0 else 'desativado'}")
-    inc = ", ".join(cfg["include"]) if cfg["include"] else "nenhuma"
-    exc = ", ".join(cfg["exclude"]) if cfg["exclude"] else "nenhuma"
-    lines.append(f"• Palavras obrigatórias: {inc}")
-    lines.append(f"• Palavras bloqueadas: {exc}")
-    return "\n".join(lines)
+        lines.append(f"• <b>Exigir 'lacrado':</b> {'Sim' if cfg['require_sealed'] else 'Não'}")
+    lines.append(f"• <b>Exigir link da loja:</b> {'Sim' if cfg['require_url'] else 'Não'}")
+    lines.append(f"• <b>Preço mínimo:</b> {money(min_p) if min_p > 0 else 'desativado'}")
+    lines.append(f"• <b>Obrigatórias:</b> {inc}")
+    lines.append(f"• <b>Bloqueadas:</b> {exc}")
+    return (
+        "<b>FILTROS DO ALERTA</b>\n\n"
+        f"📦 <b>Produto:</b> {escape(alert.label)}\n\n"
+        "<blockquote>" + "\n".join(lines) + "</blockquote>"
+    )
 
 
 def filter_menu(bot: Bot, alert: Alert, message_id: int | None, status: str = "") -> None:
     cfg = alert.filter_config()
     text = _filter_summary(alert)
     if status:
-        text = f"{status}\n\n{text}"
+        text = f"✅ <b>{escape(status)}</b>\n\n{text}"
     rows = []
     if alert.product in {"rx7600", "rx7600xt", "17", "17e"}:
         next_mode = "broad" if cfg["mode"] == "smart" else "smart"
-        mode_btn = "Modo: Inteligente ⇄" if cfg["mode"] == "smart" else "Modo: Amplo ⇄"
+        mode_btn = "⚙️ Modo: Inteligente ⇄" if cfg["mode"] == "smart" else "⚙️ Modo: Amplo ⇄"
         rows.append(((mode_btn, f"flt:{alert.id}:mode:{next_mode}"),))
     used_btn = f"{'✅' if cfg['block_used'] else '❌'} Bloquear usados/vitrine"
     rows.append(((used_btn, f"flt:{alert.id}:block_used:{int(not cfg['block_used'])}"),))
@@ -186,9 +233,19 @@ def filter_menu(bot: Bot, alert: Alert, message_id: int | None, status: str = ""
             ("➖ Bloqueadas", f"flt_words:{alert.id}:exclude"),
         )
     )
-    rows.append((("🤖 Sugerir filtros com IA", f"flt_ai:{alert.id}"),))
-    rows.append((("🔄 Restaurar padrão", f"flt_reset:{alert.id}"), ("Voltar", f"view:{alert.id}")))
-    bot.message(text, message_id=message_id, reply_markup=keyboard(*rows))
+    rows.append(
+        (
+            ("💰 Preço mínimo", f"flt_min:{alert.id}"),
+            ("🤖 Sugerir com IA", f"flt_ai:{alert.id}"),
+        )
+    )
+    rows.append(
+        (
+            ("🔄 Restaurar padrão", f"flt_reset:{alert.id}"),
+            ("↩️ Voltar", f"view:{alert.id}"),
+        )
+    )
+    bot.message(text, message_id=message_id, reply_markup=keyboard(*rows), **HTML_OPTS)
 
 
 def details(bot: Bot, alert: Alert, message_id: int | None, status: str = "") -> None:
@@ -196,45 +253,56 @@ def details(bot: Bot, alert: Alert, message_id: int | None, status: str = "") ->
     icon = "⏸" if alert.paused else "✅"
     cfg = alert.filter_config()
     mode_tag = "Inteligente" if cfg["mode"] == "smart" else "Texto puro"
+    extras: list[str] = [mode_tag]
+    if cfg["exclude"]:
+        n = len(cfg["exclude"])
+        extras.append(f"{n} bloqueio{'s' if n != 1 else ''}")
+    if int(cfg.get("min_price") or 0) > 0:
+        extras.append(f"mín. {money(int(cfg['min_price']))}")
+
     text = (
-        f"📦 {alert.label}\n"
-        f"💰 Teto: {money(alert.ceiling)}\n"
-        f"{icon} Status: {state}\n"
-        f"⚙️ Filtro: {mode_tag}"
+        "<b>DETALHES DO ALERTA</b>\n\n"
+        f"📦 <b>Produto:</b> {escape(alert.label)}\n"
+        f"🎯 <b>Teto:</b> {money(alert.ceiling)}\n"
+        f"{icon} <b>Status:</b> {state}\n"
+        f"⚙️ <b>Filtro:</b> {' · '.join(extras)}"
     )
     if status:
-        text = f"{status}\n\n{text}"
-    action = "Reativar" if alert.paused else "Pausar"
+        text = f"✅ <b>{escape(status)}</b>\n\n{text}"
+    action_label = "▶️ Reativar" if alert.paused else "⏸ Pausar"
     bot.message(
         text,
         message_id=message_id,
         reply_markup=keyboard(
-            (("Mudar teto", f"cap:{alert.id}"), (action, f"toggle:{alert.id}:{1 - alert.paused}")),
-            (("⚙️ Filtros", f"filters:{alert.id}"), ("🔎 Histórico", f"hist_pick:{alert.id}")),
-            (("Voltar", "list"),),
+            (
+                ("✏️ Mudar teto", f"cap:{alert.id}"),
+                (action_label, f"toggle:{alert.id}:{1 - alert.paused}"),
+            ),
+            (("⚙️ Filtros", f"filters:{alert.id}"), ("🕒 Histórico", f"hist_pick:{alert.id}")),
+            (("↩️ Voltar", "list"),),
         ),
+        **HTML_OPTS,
     )
 
 
 def _send_history_picker(db: sqlite3.Connection, bot: Bot, message_id: int | None) -> None:
     items = alerts(db)
-    opts = {"parse_mode": "HTML"}
     if not items:
         bot.message(
             "<b>BUSCAR HISTÓRICO</b>\n\nCrie um alerta primeiro para consultar o histórico.",
             message_id=message_id,
-            reply_markup=keyboard((("➕ Novo alerta", "new"),), (("Voltar", "home"),)),
-            **opts,
+            reply_markup=keyboard((("➕ Novo alerta", "new"),), (("↩️ Voltar", "home"),)),
+            **HTML_OPTS,
         )
         return
     rows = [((f"📦 {a.label}", f"hist_pick:{a.id}"),) for a in items]
     rows.append((("📋 Todos os alertas ativos", "hist_pick:all"),))
-    rows.append((("Voltar", "home"),))
+    rows.append((("↩️ Voltar", "home"),))
     bot.message(
         "<b>BUSCAR HISTÓRICO</b>\n\nEscolha o produto para consultar nos seus canais:",
         message_id=message_id,
         reply_markup=keyboard(*rows),
-        **opts,
+        **HTML_OPTS,
     )
 
 
@@ -271,7 +339,7 @@ def _run_history_lookup(
     else:
         alert = next((a for a in alerts(db) if a.id == int(target)), None)
         if alert is None:
-            bot.message("Alerta não encontrado.", reply_markup=HOME)
+            bot.message("⚠️ Alerta não encontrado.", reply_markup=HOME, **HTML_OPTS)
             return
         selected = [alert]
         title = alert.label
@@ -279,28 +347,30 @@ def _run_history_lookup(
         multi = False
 
     if not selected:
-        bot.message("Nenhum alerta ativo para buscar.", reply_markup=HOME)
+        bot.message("ℹ️ Nenhum alerta ativo para buscar.", reply_markup=HOME, **HTML_OPTS)
         return
 
     period_label = "últimas 24 horas" if hours <= 24 else f"últimos {hours // 24} dias"
     channel_count = len(promo_history.read_sources(sources_file))
     count_hint = f"os {channel_count} canais" if channel_count else "os seus canais"
-    opts = {"parse_mode": "HTML", "link_preview_options": {"is_disabled": True}}
 
     loading = bot.message(
         (
-            f"<b>Buscando {escape(title)}</b> · {escape(period_label)}\n\n"
+            "<b>BUSCANDO OFERTAS</b>\n\n"
+            f"📦 <b>Produto:</b> {escape(title)}\n"
+            f"🗓️ <b>Período:</b> {escape(period_label.capitalize())}\n\n"
             f"<blockquote>⏳ Varrendo {count_hint} monitorados…</blockquote>"
         ),
-        **opts,
+        **HTML_OPTS,
     )
     result_mid = loading["message_id"]
 
     if state_path is None:
         bot.message(
-            "Busca de histórico indisponível sem caminho de banco configurado.",
+            "⚠️ Busca de histórico indisponível sem caminho de banco configurado.",
             message_id=result_mid,
             reply_markup=keyboard((("🏠 Menu", "home_new"),)),
+            **HTML_OPTS,
         )
         return
     try:
@@ -315,13 +385,16 @@ def _run_history_lookup(
         print(f"promo_history error: {exc}", file=sys.stderr, flush=True)
         bot.message(
             (
-                f"<b>{escape(title)}</b> · {escape(period_label)}\n\n"
-                "<blockquote>Não consegui buscar no Telegram agora. Tente novamente em instantes."
-                "</blockquote>"
+                "<b>BUSCAR HISTÓRICO</b>\n\n"
+                f"📦 <b>Produto:</b> {escape(title)}\n\n"
+                "<blockquote>⚠️ Não consegui buscar no Telegram agora. "
+                "Tente novamente em instantes.</blockquote>"
             ),
             message_id=result_mid,
-            reply_markup=keyboard((("Tentar novamente", f"hist_run:{target}:{hours}"),)),
-            **opts,
+            reply_markup=keyboard(
+                (("🔄 Tentar novamente", f"hist_run:{target}:{hours}"), ("🏠 Menu", "home_new"))
+            ),
+            **HTML_OPTS,
         )
         return
 
@@ -345,22 +418,22 @@ def _run_history_lookup(
             },
         )
         lowest = money(above[0].offer.price)
-        rows.append(((f"🔽 Ver acima do teto (menor: {lowest})", f"hist_above:{search_id}:0"),))
+        rows.append(((f"🔽 Ver fora do teto (menor: {lowest})", f"hist_above:{search_id}:0"),))
     other_hours = 168 if hours <= 24 else 24
-    other_label = "Ver 7 dias" if other_hours == 168 else "Ver 24h"
-    rows.append(((other_label, f"hist_run:{target}:{other_hours}"), ("Nova busca", "hist_new")))
-    rows.append((("Menu", "home_new"),))
+    other_label = "📅 Ver 7 dias" if other_hours == 168 else "🕒 Ver 24h"
+    rows.append(((other_label, f"hist_run:{target}:{other_hours}"), ("🕒 Nova busca", "hist_new")))
+    rows.append((("🏠 Menu", "home_new"),))
     nav = keyboard(*rows)
 
     bot.message(
         chunks[0],
         message_id=result_mid,
         reply_markup=nav if len(chunks) == 1 else None,
-        **opts,
+        **HTML_OPTS,
     )
     for idx, chunk in enumerate(chunks[1:], start=1):
         is_last = idx == len(chunks) - 1
-        bot.message(chunk, reply_markup=nav if is_last else None, **opts)
+        bot.message(chunk, reply_markup=nav if is_last else None, **HTML_OPTS)
 
 
 def _show_above_page(db: sqlite3.Connection, bot: Bot, search_id: str, offset: int) -> None:
@@ -369,8 +442,9 @@ def _show_above_page(db: sqlite3.Connection, bot: Bot, search_id: str, offset: i
     raw = get(db, f"hist_above:{search_id}")
     if not raw:
         bot.message(
-            "Essa busca expirou. Faça uma nova busca para ver as ofertas acima do teto.",
-            reply_markup=keyboard((("Nova busca", "hist_new"), ("Menu", "home_new"))),
+            "ℹ️ Essa busca expirou. Faça uma nova busca para ver as ofertas fora do teto.",
+            reply_markup=keyboard((("🕒 Nova busca", "hist_new"), ("🏠 Menu", "home_new"))),
+            **HTML_OPTS,
         )
         return
     data = json.loads(raw)
@@ -389,17 +463,16 @@ def _show_above_page(db: sqlite3.Connection, bot: Bot, search_id: str, offset: i
         rows.append(
             (
                 (
-                    f"🔽 Ver mais acima do teto (+{remaining})",
+                    f"🔽 Ver mais fora do teto (+{remaining})",
                     f"hist_above:{search_id}:{next_offset}",
                 ),
             )
         )
-    rows.append((("Nova busca", "hist_new"), ("Menu", "home_new")))
+    rows.append((("🕒 Nova busca", "hist_new"), ("🏠 Menu", "home_new")))
     nav = keyboard(*rows)
-    opts = {"parse_mode": "HTML", "link_preview_options": {"is_disabled": True}}
     for idx, chunk in enumerate(chunks):
         is_last = idx == len(chunks) - 1
-        bot.message(chunk, reply_markup=nav if is_last else None, **opts)
+        bot.message(chunk, reply_markup=nav if is_last else None, **HTML_OPTS)
 
 
 def _show_channels(
@@ -414,7 +487,6 @@ def _show_channels(
 ) -> None:
     from . import promo_history
 
-    opts = {"parse_mode": "HTML", "link_preview_options": {"is_disabled": True}}
     channels: list[promo_history.ChannelEntry] | None = None
     now = int(time.time())
 
@@ -429,9 +501,10 @@ def _show_channels(
 
     if channels is None:
         loading = bot.message(
-            "<b>CANAIS MONITORADOS</b>\n\n<blockquote>⏳ Carregando lista de canais…</blockquote>",
+            "📡 <b>CANAIS MONITORADOS</b>\n\n"
+            "<blockquote>⏳ Carregando lista de canais…</blockquote>",
             message_id=message_id,
-            **opts,
+            **HTML_OPTS,
         )
         target_mid = message_id if message_id is not None else loading["message_id"]
         if state_path is None:
@@ -449,30 +522,30 @@ def _show_channels(
             except Exception as exc:
                 print(f"promo_channels error: {exc}", file=sys.stderr, flush=True)
                 bot.message(
-                    "<b>CANAIS MONITORADOS</b>\n\n"
-                    "<blockquote>Não consegui carregar os canais agora. "
+                    "📡 <b>CANAIS MONITORADOS</b>\n\n"
+                    "<blockquote>⚠️ Não consegui carregar os canais agora. "
                     "Tente novamente.</blockquote>",
                     message_id=target_mid,
                     reply_markup=keyboard(
-                        (("Tentar novamente", "channels_refresh"), ("Menu", "home_new"))
+                        (("🔄 Tentar novamente", "channels_refresh"), ("🏠 Menu", "home_new"))
                     ),
-                    **opts,
+                    **HTML_OPTS,
                 )
                 return
     else:
         target_mid = message_id
 
     chunks = promo_history.render_channels(channels)
-    nav = keyboard((("🔄 Atualizar lista", "channels_refresh"), ("Menu", "home_new")))
+    nav = keyboard((("🔄 Atualizar lista", "channels_refresh"), ("🏠 Menu", "home_new")))
     bot.message(
         chunks[0],
         message_id=target_mid,
         reply_markup=nav if len(chunks) == 1 else None,
-        **opts,
+        **HTML_OPTS,
     )
     for idx, chunk in enumerate(chunks[1:], start=1):
         is_last = idx == len(chunks) - 1
-        bot.message(chunk, reply_markup=nav if is_last else None, **opts)
+        bot.message(chunk, reply_markup=nav if is_last else None, **HTML_OPTS)
 
 
 def _prompt_new_alert_confirmation(
@@ -484,11 +557,14 @@ def _prompt_new_alert_confirmation(
     put(db, "step", "confirm")
     put(db, "ai_suggestion", "")
 
-    opts = {"parse_mode": "HTML"}
     loading = bot.message(
-        f"<b>Novo alerta · {escape(label)}</b>\n\n"
-        "<blockquote>🤖 Analisando o produto para sugerir filtros…</blockquote>",
-        **opts,
+        (
+            "<b>NOVO ALERTA</b>\n\n"
+            f"📦 <b>Produto:</b> {escape(label)}\n"
+            f"🎯 <b>Teto:</b> {money(ceiling_cents)}\n\n"
+            "<blockquote>🤖 Analisando o produto para sugerir filtros…</blockquote>"
+        ),
+        **HTML_OPTS,
     )
     mid = loading["message_id"]
     suggestion = promo_ai.suggest_filters(label, ceiling_cents)
@@ -506,47 +582,45 @@ def _prompt_new_alert_confirmation(
                 ensure_ascii=False,
             ),
         )
-        lines = [
-            "<b>Confirmar novo alerta</b>",
-            "",
-            f"<b>Produto:</b> {escape(label)}",
-            f"<b>Teto:</b> {money(ceiling_cents)}",
-            "",
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━",
-            "",
-            "<b>Filtros sugeridos (IA)</b>",
-        ]
+        ai_lines: list[str] = []
         if suggestion.exclude:
-            lines.append(f"• <b>Bloquear:</b> {escape(', '.join(suggestion.exclude))}")
+            ai_lines.append(f"• <b>Bloquear:</b> {escape(', '.join(suggestion.exclude))}")
         if suggestion.min_price > 0:
-            lines.append(f"• <b>Preço mínimo:</b> {money(suggestion.min_price)}")
+            ai_lines.append(f"• <b>Preço mínimo:</b> {money(suggestion.min_price)}")
         if suggestion.tip:
-            lines.append(f"• <i>{escape(suggestion.tip)}</i>")
-        lines.extend(["", "Como deseja criar este alerta?"])
+            ai_lines.append(f"• <i>{escape(suggestion.tip)}</i>")
+        body = (
+            "<b>CONFIRMAR NOVO ALERTA</b>\n\n"
+            f"📦 <b>Produto:</b> {escape(label)}\n"
+            f"🎯 <b>Teto:</b> {money(ceiling_cents)}\n\n"
+            "🤖 <b>Filtros sugeridos pela IA</b>\n"
+            "<blockquote>" + "\n".join(ai_lines) + "</blockquote>\n\n"
+            "Como deseja criar este alerta?"
+        )
         bot.message(
-            "\n".join(lines),
+            body,
             message_id=mid,
             reply_markup=keyboard(
                 (("✅ Usar filtros sugeridos", "confirm_ai"),),
                 (("📝 Texto puro (sem bloqueios)", "confirm_raw"),),
-                (("Cancelar", "home"),),
+                (("❌ Cancelar", "home"),),
             ),
-            **opts,
+            **HTML_OPTS,
         )
         return
 
     bot.message(
         (
-            "<b>Confirmar novo alerta</b>\n\n"
-            f"<b>Produto:</b> {escape(label)}\n"
-            f"<b>Teto:</b> {money(ceiling_cents)}"
+            "<b>CONFIRMAR NOVO ALERTA</b>\n\n"
+            f"📦 <b>Produto:</b> {escape(label)}\n"
+            f"🎯 <b>Teto:</b> {money(ceiling_cents)}"
         ),
         message_id=mid,
         reply_markup=keyboard(
-            (("Confirmar", "confirm"), ("Texto puro", "confirm_raw")),
-            (("Cancelar", "home"),),
+            (("✅ Confirmar", "confirm"), ("📝 Texto puro", "confirm_raw")),
+            (("❌ Cancelar", "home"),),
         ),
-        **opts,
+        **HTML_OPTS,
     )
 
 
@@ -559,7 +633,7 @@ def _create_pending_alert(db: sqlite3.Connection, bot: Bot, message_id: int, mod
 
     if mode == "raw":
         filters_dict = dict(PURE_TEXT_FILTERS)
-        status = "Alerta criado (texto puro, sem bloqueios)."
+        status = "Alerta criado em modo texto puro."
     elif mode == "ai":
         raw_ai = get(db, "ai_suggestion")
         if raw_ai:
@@ -569,7 +643,7 @@ def _create_pending_alert(db: sqlite3.Connection, bot: Bot, message_id: int, mod
                 filters_dict["require_url"] = False
                 filters_dict["exclude"] = list(ai.get("exclude") or [])
                 filters_dict["min_price"] = int(ai.get("min_price") or 0)
-                status = "Alerta criado com os filtros sugeridos pela IA."
+                status = "Alerta criado com filtros da IA."
             except (ValueError, TypeError):
                 filters_dict = {}
 
@@ -588,12 +662,14 @@ def _suggest_filters_for_existing(
 ) -> None:
     from . import promo_ai
 
-    opts = {"parse_mode": "HTML"}
     bot.message(
-        f"<b>Filtros · {escape(alert.label)}</b>\n\n"
-        "<blockquote>🤖 Analisando o produto com IA…</blockquote>",
+        (
+            "<b>FILTROS DO ALERTA</b>\n\n"
+            f"📦 <b>Produto:</b> {escape(alert.label)}\n\n"
+            "<blockquote>🤖 Analisando o produto com IA…</blockquote>"
+        ),
         message_id=message_id,
-        **opts,
+        **HTML_OPTS,
     )
     suggestion = promo_ai.suggest_filters(alert.label, alert.ceiling)
     if suggestion is None:
@@ -601,7 +677,7 @@ def _suggest_filters_for_existing(
             bot,
             alert,
             message_id,
-            "Não foi possível gerar sugestão agora. Você pode configurar manualmente abaixo.",
+            "Não consegui gerar sugestão agora. Configure manualmente abaixo.",
         )
         return
     put(
@@ -616,25 +692,26 @@ def _suggest_filters_for_existing(
             ensure_ascii=False,
         ),
     )
-    lines = [
-        f"<b>Sugestão de filtros · {escape(alert.label)}</b>",
-        "",
-    ]
+    ai_lines: list[str] = []
     if suggestion.exclude:
-        lines.append(f"• <b>Bloquear:</b> {escape(', '.join(suggestion.exclude))}")
+        ai_lines.append(f"• <b>Bloquear:</b> {escape(', '.join(suggestion.exclude))}")
     if suggestion.min_price > 0:
-        lines.append(f"• <b>Preço mínimo:</b> {money(suggestion.min_price)}")
+        ai_lines.append(f"• <b>Preço mínimo:</b> {money(suggestion.min_price)}")
     if suggestion.tip:
-        lines.append(f"• <i>{escape(suggestion.tip)}</i>")
-    lines.extend(["", "Deseja aplicar esses filtros?"])
+        ai_lines.append(f"• <i>{escape(suggestion.tip)}</i>")
     bot.message(
-        "\n".join(lines),
+        (
+            "<b>SUGESTÃO DE FILTROS (IA)</b>\n\n"
+            f"📦 <b>Produto:</b> {escape(alert.label)}\n\n"
+            "<blockquote>" + "\n".join(ai_lines) + "</blockquote>\n\n"
+            "Deseja aplicar esses filtros?"
+        ),
         message_id=message_id,
         reply_markup=keyboard(
             (("✅ Aplicar filtros da IA", f"flt_ai_apply:{alert.id}"),),
-            (("Voltar", f"filters:{alert.id}"),),
+            (("↩️ Voltar", f"filters:{alert.id}"),),
         ),
-        **opts,
+        **HTML_OPTS,
     )
 
 
@@ -677,29 +754,11 @@ def handle(
     cmd = text.split()[0].split("@")[0].casefold()
     if cmd in {"/start", "/menu", "/cancelar"}:
         put(db, "step", "")
-        bot.message("⚡ PromoBot\n\nO que você quer fazer?", reply_markup=HOME)
+        _send_home(bot)
         return
     if cmd == "/alertas":
         put(db, "step", "")
-        items = alerts(db)
-        if not items:
-            bot.message(
-                "📋 Meus alertas\n\nVocê ainda não tem alertas cadastrados.",
-                reply_markup=keyboard((("➕ Novo alerta", "new"),), (("Voltar", "home"),)),
-            )
-            return
-        rows = [
-            ((f"{'⏸ ' if a.paused else '✅ '}{a.label} · {money(a.ceiling)}", f"view:{a.id}"),)
-            for a in items
-        ]
-        rows.append((("Voltar", "home"),))
-        bot.message(
-            (
-                "📋 Meus alertas\n\n"
-                "Escolha um produto para editar teto, pausar, filtrar ou ver histórico:"
-            ),
-            reply_markup=keyboard(*rows),
-        )
+        _send_alerts_list(db, bot, None)
         return
     if cmd == "/historico":
         put(db, "step", "")
@@ -717,12 +776,14 @@ def handle(
             session=session,
         )
         return
+
     step = get(db, "step")
     if step == "product":
         if len(text) > 80 or "\n" in text or not normalize(text):
             bot.message(
-                "Digite o nome do produto em uma linha, com até 80 caracteres.",
+                "⚠️ Digite o nome do produto em uma linha (até 80 caracteres).",
                 reply_markup=BACK,
+                **HTML_OPTS,
             )
             return
         matching = next((a for a in alerts(db) if normalize(a.label) == normalize(text)), None)
@@ -732,12 +793,30 @@ def handle(
             return
         put(db, "label", text)
         put(db, "step", "new_cap")
-        bot.message(f"Qual é o preço teto para {text}?\nEx.: 4500 ou 4.500,00", reply_markup=BACK)
+        bot.message(
+            (
+                "<b>NOVO ALERTA</b>\n\n"
+                f"📦 <b>Produto:</b> {escape(text)}\n\n"
+                "🎯 Qual é o preço teto em reais?\n"
+                "<i>Ex.: 1650 ou 1.650,00</i>"
+            ),
+            reply_markup=BACK,
+            **HTML_OPTS,
+        )
     elif step.startswith("cap:") or step == "new_cap":
         raw = re.sub(r"^R\$\s*", "", text, flags=re.IGNORECASE)
         amount = parse_amount(raw) if re.fullmatch(r"\d[\d.,]{0,13}", raw) else None
+        back_markup = (
+            BACK
+            if step == "new_cap"
+            else keyboard((("↩️ Voltar", f"view:{step.split(':', 1)[1]}"),))
+        )
         if amount is None or not 0 < amount <= 1000000:
-            bot.message("Digite um preço em reais.\nEx.: 4500 ou 4.500,00", reply_markup=BACK)
+            bot.message(
+                "⚠️ Digite um preço válido em reais.\n<i>Ex.: 4500 ou 4.500,00</i>",
+                reply_markup=back_markup,
+                **HTML_OPTS,
+            )
             return
         if step == "new_cap":
             _prompt_new_alert_confirmation(db, bot, get(db, "label"), cents(amount))
@@ -746,18 +825,45 @@ def handle(
         alert = next((a for a in alerts(db) if a.id == alert_id), None)
         put(db, "step", "")
         if alert is None:
-            bot.message("Alerta não encontrado.", reply_markup=HOME)
+            bot.message("⚠️ Alerta não encontrado.", reply_markup=HOME, **HTML_OPTS)
             return
         db.execute("UPDATE promo_alerts SET ceiling = ? WHERE id = ?", (cents(amount), alert_id))
         updated = next(a for a in alerts(db) if a.id == alert_id)
         details(bot, updated, None, "Teto atualizado.")
+    elif match := re.fullmatch(r"flt_min:(\d+)", step):
+        alert_id = int(match.group(1))
+        alert = next((a for a in alerts(db) if a.id == alert_id), None)
+        if alert is None:
+            put(db, "step", "")
+            bot.message("⚠️ Alerta não encontrado.", reply_markup=HOME, **HTML_OPTS)
+            return
+        if normalize(text) in {"0", "limpar", "desativar", "nenhum", "-"}:
+            new_min = 0
+        else:
+            raw = re.sub(r"^R\$\s*", "", text, flags=re.IGNORECASE)
+            amount = parse_amount(raw) if re.fullmatch(r"\d[\d.,]{0,13}", raw) else None
+            if amount is None or not 0 <= amount <= 1000000:
+                bot.message(
+                    "⚠️ Digite um valor em reais (ou '0' / 'limpar' para desativar).",
+                    reply_markup=keyboard((("↩️ Voltar", f"filters:{alert.id}"),)),
+                    **HTML_OPTS,
+                )
+                return
+            new_min = cents(amount)
+        put(db, "step", "")
+        cfg = alert.filter_config()
+        cfg["min_price"] = new_min
+        save_filters(db, alert.id, cfg)
+        updated = next(a for a in alerts(db) if a.id == alert.id)
+        status = "Preço mínimo desativado." if new_min == 0 else "Preço mínimo atualizado."
+        filter_menu(bot, updated, None, status)
     elif match := re.fullmatch(r"flt_words:(\d+):(include|exclude)", step):
         alert_id = int(match.group(1))
         field = match.group(2)
         alert = next((a for a in alerts(db) if a.id == alert_id), None)
         put(db, "step", "")
         if alert is None:
-            bot.message("Alerta não encontrado.", reply_markup=HOME)
+            bot.message("⚠️ Alerta não encontrado.", reply_markup=HOME, **HTML_OPTS)
             return
         cfg = alert.filter_config()
         if normalize(text) in {"limpar", "nenhuma", "nenhum", "-"}:
@@ -771,7 +877,7 @@ def handle(
         label = "Palavras obrigatórias" if field == "include" else "Palavras bloqueadas"
         filter_menu(bot, updated, None, f"{label} atualizadas.")
     else:
-        bot.message("⚡ PromoBot\n\nO que você quer fazer?", reply_markup=HOME)
+        _send_home(bot)
 
 
 def handle_action(
@@ -786,37 +892,22 @@ def handle_action(
 ) -> None:
     if action in {"home", "home_new"}:
         put(db, "step", "")
-        bot.message(
-            "⚡ PromoBot\n\nO que você quer fazer?",
-            message_id=None if action == "home_new" else message_id,
-            reply_markup=HOME,
-        )
+        _send_home(bot, message_id=None if action == "home_new" else message_id)
     elif action == "new":
         put(db, "step", "product")
-        bot.message("Qual produto você quer acompanhar?", message_id=message_id, reply_markup=BACK)
-    elif action == "list":
-        put(db, "step", "")
-        items = alerts(db)
-        if not items:
-            bot.message(
-                "📋 Meus alertas\n\nVocê ainda não tem alertas cadastrados.",
-                message_id=message_id,
-                reply_markup=keyboard((("➕ Novo alerta", "new"),), (("Voltar", "home"),)),
-            )
-            return
-        rows = [
-            ((f"{'⏸ ' if a.paused else '✅ '}{a.label} · {money(a.ceiling)}", f"view:{a.id}"),)
-            for a in items
-        ]
-        rows.append((("Voltar", "home"),))
         bot.message(
             (
-                "📋 Meus alertas\n\n"
-                "Escolha um produto para editar teto, pausar, filtrar ou ver histórico:"
+                "<b>NOVO ALERTA</b>\n\n"
+                "📦 Qual produto você quer acompanhar?\n\n"
+                "<i>Ex.: Ryzen 5800X3D, Air fryer, Monitor 27 QHD</i>"
             ),
             message_id=message_id,
-            reply_markup=keyboard(*rows),
+            reply_markup=BACK,
+            **HTML_OPTS,
         )
+    elif action == "list":
+        put(db, "step", "")
+        _send_alerts_list(db, bot, message_id)
     elif action in {"hist", "hist_new"}:
         put(db, "step", "")
         _send_history_picker(db, bot, None if action == "hist_new" else message_id)
@@ -855,9 +946,9 @@ def handle_action(
                     ("🕒 Últimas 24h", f"hist_run:{target}:24"),
                     ("📅 Últimos 7 dias", f"hist_run:{target}:168"),
                 ),
-                (("Voltar", back_action),),
+                (("↩️ Voltar", back_action),),
             ),
-            parse_mode="HTML",
+            **HTML_OPTS,
         )
     elif match := re.fullmatch(r"hist_run:(all|\d+):(24|168)", action):
         put(db, "step", "")
@@ -900,7 +991,7 @@ def handle_action(
                 cfg["min_price"] = int(ai["min_price"])
             save_filters(db, alert.id, cfg)
             updated = next(a for a in alerts(db) if a.id == alert.id)
-            filter_menu(bot, updated, message_id, "Filtros sugeridos pela IA aplicados.")
+            filter_menu(bot, updated, message_id, "Filtros da IA aplicados.")
     elif match := re.fullmatch(r"flt_reset:(\d+)", action):
         put(db, "step", "")
         alert = next((a for a in alerts(db) if a.id == int(match.group(1))), None)
@@ -919,18 +1010,45 @@ def handle_action(
         save_filters(db, alert.id, cfg)
         updated = next(a for a in alerts(db) if a.id == alert.id)
         filter_menu(bot, updated, message_id, "Filtro atualizado.")
+    elif match := re.fullmatch(r"flt_min:(\d+)", action):
+        alert = next((a for a in alerts(db) if a.id == int(match.group(1))), None)
+        if alert is None:
+            return
+        put(db, "step", f"flt_min:{alert.id}")
+        cur_min = int(alert.filter_config().get("min_price") or 0)
+        cur_txt = money(cur_min) if cur_min > 0 else "desativado"
+        bot.message(
+            (
+                "<b>PREÇO MÍNIMO</b>\n\n"
+                f"📦 <b>Produto:</b> {escape(alert.label)}\n"
+                f"💰 <b>Atual:</b> {cur_txt}\n\n"
+                "Digite o valor mínimo em reais (bloqueia acessórios baratos):\n"
+                "<i>Envie '0' ou 'limpar' para desativar.</i>"
+            ),
+            message_id=message_id,
+            reply_markup=keyboard((("↩️ Voltar", f"filters:{alert.id}"),)),
+            **HTML_OPTS,
+        )
     elif match := re.fullmatch(r"flt_words:(\d+):(include|exclude)", action):
         alert_id, field = int(match.group(1)), match.group(2)
         alert = next((a for a in alerts(db) if a.id == alert_id), None)
         if alert is None:
             return
         put(db, "step", f"flt_words:{alert.id}:{field}")
-        kind = "obrigatórias" if field == "include" else "bloqueadas"
+        title = "PALAVRAS OBRIGATÓRIAS" if field == "include" else "PALAVRAS BLOQUEADAS"
+        cur = alert.filter_config()[field]
+        cur_txt = escape(", ".join(cur)) if cur else "nenhuma"
         bot.message(
-            f"Digite as palavras {kind} para {alert.label}, separadas por vírgula.\n"
-            f"Envie 'limpar' para remover todas.",
+            (
+                f"<b>{title}</b>\n\n"
+                f"📦 <b>Produto:</b> {escape(alert.label)}\n"
+                f"📋 <b>Atuais:</b> {cur_txt}\n\n"
+                "Digite as palavras separadas por vírgula:\n"
+                "<i>Envie 'limpar' para remover todas.</i>"
+            ),
             message_id=message_id,
-            reply_markup=keyboard((("Voltar", f"filters:{alert.id}"),)),
+            reply_markup=keyboard((("↩️ Voltar", f"filters:{alert.id}"),)),
+            **HTML_OPTS,
         )
     elif match := re.fullmatch(r"(view|cap|toggle):(\d+)(?::([01]))?", action):
         command, alert_id, target = match.groups()
@@ -940,9 +1058,16 @@ def handle_action(
         if command == "cap":
             put(db, "step", f"cap:{alert.id}")
             bot.message(
-                f"Qual é o novo preço teto para {alert.label}?\nEx.: 4500 ou 4.500,00",
+                (
+                    "<b>MUDAR TETO</b>\n\n"
+                    f"📦 <b>Produto:</b> {escape(alert.label)}\n"
+                    f"🎯 <b>Teto atual:</b> {money(alert.ceiling)}\n\n"
+                    "Digite o novo preço teto em reais:\n"
+                    "<i>Ex.: 4500 ou 4.500,00</i>"
+                ),
                 message_id=message_id,
-                reply_markup=BACK,
+                reply_markup=keyboard((("↩️ Voltar", f"view:{alert.id}"),)),
+                **HTML_OPTS,
             )
             return
         put(db, "step", "")

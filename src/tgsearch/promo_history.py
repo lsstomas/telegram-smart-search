@@ -280,8 +280,20 @@ def render_digest(
 
     under_count = len(under)
     under_word = "oferta" if under_count == 1 else "ofertas"
+    above_count = len(above)
+    above_word = "oferta" if above_count == 1 else "ofertas"
+
+    summary_lines = [f"✅ <b>DENTRO DO TETO</b> · {under_count} {under_word}"]
+    if above:
+        lowest = promo_delivery.money(above[0].offer.price)
+        summary_lines.append(
+            f"❌ <b>FORA DO TETO</b> · {above_count} {above_word} (menor: <b>{lowest}</b>)"
+        )
+    else:
+        summary_lines.append("❌ <b>FORA DO TETO</b> · 0 ofertas")
+    blocks.append("\n".join(summary_lines))
+
     if under:
-        blocks.append(f"✅ <b>DENTRO DO TETO</b> · {under_count} {under_word}")
         for idx, entry in enumerate(under[:MAX_UNDER_CEILING]):
             blocks.append(format_offer_card(entry, best=(idx == 0), show_title=multi_product))
         if under_count > MAX_UNDER_CEILING:
@@ -289,16 +301,7 @@ def render_digest(
             blocks.append(f"<i>… e mais {extra} ofertas dentro do teto.</i>")
     else:
         blocks.append(
-            "✅ <b>DENTRO DO TETO</b> · 0 ofertas\n\n"
             "<blockquote>Nenhuma oferta ficou dentro do seu teto nesse período.</blockquote>"
-        )
-
-    if above:
-        above_count = len(above)
-        above_word = "oferta" if above_count == 1 else "ofertas"
-        lowest = promo_delivery.money(above[0].offer.price)
-        blocks.append(
-            f"❌ <b>ACIMA DO TETO</b> · {above_count} {above_word} (menor: <b>{lowest}</b>)"
         )
 
     return _paginate_blocks(blocks), above
@@ -320,7 +323,7 @@ def render_above_page(
     end_num = offset + len(page)
 
     header_lines = [
-        "❌ <b>OFERTAS ACIMA DO TETO</b>",
+        "❌ <b>OFERTAS FORA DO TETO</b>",
         "",
         f"📦 <b>Produto:</b> {escape(title)}",
         f"🗓️ <b>Período:</b> {escape(period_label.capitalize())}",
