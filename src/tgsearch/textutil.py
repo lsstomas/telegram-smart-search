@@ -18,9 +18,11 @@ TRACKING_PARAMS = frozenset(
 
 
 def normalize(text: str) -> str:
-    """Casefold and strip accents so 'Cartão' and 'cartao' compare equal."""
+    """Casefold and strip accents and invisible format characters."""
     decomposed = unicodedata.normalize("NFKD", text)
-    stripped = "".join(c for c in decomposed if not unicodedata.combining(c))
+    stripped = "".join(
+        c for c in decomposed if not unicodedata.combining(c) and unicodedata.category(c) != "Cf"
+    )
     return stripped.casefold()
 
 

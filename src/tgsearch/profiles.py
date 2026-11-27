@@ -19,7 +19,7 @@ from .models import Message
 from .search import Query
 from .textutil import extract_urls, is_telegram_url
 
-_AMOUNT = re.compile(r"(?:R\$|US\$|\$)\s?\d")
+_AMOUNT = re.compile(r"(?:R\$|US\$|\$)\s?\d|\bpor\s*:?\s*\d[\d.,]*", re.IGNORECASE)
 
 
 @dataclass(frozen=True)

@@ -65,6 +65,7 @@ SELLER = re.compile(
     r"(?im)^\W*(?:vendido(?:\s+e\s+(?:entregue|enviado))?\s+por|vendedor)\s*:?\s*([^\r\n]{2,80})"
 )
 EXTRA_STORE_HOSTS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("amazon", ("link.amazon",)),
     ("mercadolivre", ("meli.la",)),
     ("fastshop", ("fastshop.com.br",)),
     ("carrefour", ("carrefour.com.br",)),
@@ -77,7 +78,12 @@ EXTRA_STORE_HOSTS: tuple[tuple[str, tuple[str, ...]], ...] = (
 )
 
 
-def classify_phone(text: str, *, allow_paid_shipping: bool = False) -> Classification:
+def classify_phone(
+    text: str,
+    *,
+    allow_paid_shipping: bool = False,
+    require_sealed: bool = True,
+) -> Classification:
     plain = normalize(text)
     models = {
         re.sub(r"[ \t-]+", "", number) + variant for number, variant in PHONE_MODEL.findall(plain)
@@ -88,7 +94,7 @@ def classify_phone(text: str, *, allow_paid_shipping: bool = False) -> Classific
     restocked = allow_paid_shipping and bool(RESTOCK.search(plain))
     if (
         {re.sub(r"\s+", "", size) for size in storage} != {"256gb"}
-        or not PHONE_SEALED.search(plain)
+        or (require_sealed and not PHONE_SEALED.search(plain))
         or PHONE_CONDITION.search(plain)
         or PHONE_ACCESSORY.search(plain)
         or PHONE_RESTRICTION.search(plain)
@@ -105,7 +111,7 @@ PROMO_PHONE_PROFILE = Profile(
     tuple(PHONE_LABELS),
     PHONE_LABELS,
     (),
-    lambda text: classify_phone(text, allow_paid_shipping=True),
+    lambda text: classify_phone(text, allow_paid_shipping=True, require_sealed=False),
 )
 OFFER_FILTER = offer_filter(PROFILE)
 PHONE_OFFER_FILTER = offer_filter(PHONE_PROFILE)
@@ -264,9 +270,25 @@ def promo_store(post: Post) -> str:
     if post.store:
         return post.store
     if post.url:
-        host = (urlsplit(post.url).hostname or "").lower().removeprefix("www.")
+        parts = urlsplit(post.url)
+        host = (parts.hostname or "").lower().removeprefix("www.")
         for name, hosts in EXTRA_STORE_HOSTS:
             if any(host == h or host.endswith("." + h) for h in hosts):
+                return name
+        path = parts.path.lower()
+        for prefix, name in (
+            ("/amz/", "amazon"),
+            ("/ml/", "mercadolivre"),
+            ("/kabum/", "kabum"),
+            ("/kbm/", "kabum"),
+            ("/magalu/", "magalu"),
+            ("/shopee/", "shopee"),
+            ("/ali/", "aliexpress"),
+        ):
+            if path.startswith(prefix):
+                return name
+        for suffix, name in (("-amazon", "amazon"), ("-mercadolivre", "mercadolivre")):
+            if path.endswith(suffix):
                 return name
         return host
     return ""

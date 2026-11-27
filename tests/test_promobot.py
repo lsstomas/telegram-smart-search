@@ -201,6 +201,68 @@ class PromoBotTests(unittest.TestCase):
             promo_menu.handle_action(fresh_db, self.bot, "list", 1)
             self.assertIn("ainda não tem alertas", self.bot.messages[-1][0])
 
+    def test_real_iphone_17_without_lacrado_matches_and_dedupes(self):
+        alert = next(a for a in promo_menu.alerts(self.db) if a.product == "17")
+        post = Message(
+            "Show de Ofertas 2.0",
+            196564,
+            None,
+            "É PRA COMPRAAAAAAA AGORAAAAAAA!\n\n"
+            "iPhone 17 256 GB 8 GB Preto | Mercado Livre\n\n"
+            "🔥Por: R$\u00a04.399,00\n\n"
+            "🎟 Use o cupom: MADRUXPTMANA\n\n"
+            "Link: https://meli.la/1rjr5ei",
+            link="https://t.me/showofertas2/196564",
+        )
+        (offer,) = watch.promo_matches(post, "channel", [(alert, watch.PROMO_PHONE_PROFILE)])
+        self.assertEqual(offer.title, "iPhone 17 256 GB")
+        self.assertEqual(offer.store, "mercadolivre")
+        self.assertEqual(offer.price, 439900)
+        self.assertEqual(offer.coupons, ["MADRUXPTMANA"])
+        self.assertEqual(offer.buy_url, "https://meli.la/1rjr5ei")
+
+    def test_zero_width_brand_bare_por_price_and_link_amazon(self):
+        alert = next(a for a in promo_menu.alerts(self.db) if a.product == "17e")
+        p1 = Message(
+            "Crowman",
+            1,
+            None,
+            "Ap\u2060ple iPh\u2060one 17e 256GB Rosa\n"
+            "De R$ 7.299 por R$ 3.650 no Pix\n"
+            "Use o Cupom: 7CJMELI + ELETRO300\n"
+            "https://link.amazon/B00001",
+            link="https://t.me/crowman/1",
+        )
+        (o1,) = watch.promo_matches(p1, "channel", [(alert, watch.PROMO_PHONE_PROFILE)])
+        self.assertEqual(o1.store, "amazon")
+        self.assertEqual(o1.price, 365000)
+        self.assertEqual(o1.coupons, ["7CJMELI", "ELETRO300"])
+
+        p2 = Message(
+            "Promos",
+            2,
+            None,
+            "Apple iPhone 17e 256gb rosa\n"
+            "❌ DE: 4999,00\n"
+            "✅ POR: 3650,00 🔥\n"
+            "https://meli.la/abc123",
+            link="https://t.me/promos/2",
+        )
+        (o2,) = watch.promo_matches(p2, "channel", [(alert, watch.PROMO_PHONE_PROFILE)])
+        self.assertEqual(o2.store, "mercadolivre")
+        self.assertEqual(o2.price, 365000)
+
+        used = Message(
+            "Promos",
+            3,
+            None,
+            "iPhone 17 256 GB seminovo vitrine\nPor R$ 3.500,00\nhttps://meli.la/used",
+            link="https://t.me/promos/3",
+        )
+        self.assertEqual(
+            list(watch.promo_matches(used, "channel", [(alert, watch.PROMO_PHONE_PROFILE)])), []
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

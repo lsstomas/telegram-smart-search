@@ -55,6 +55,18 @@ _RATE = re.compile(r"(?P<r>\d{1,2}(?:[.,]\d{1,2})?)\s*%\s*(?:a\.?\s?m\b|ao\s+mes
 _WITH_COUPON = re.compile(
     r"\b(?:com|c/|usando|aplicando|aplique|use|utilizando|no)\s+(?:o\s+)?cupo[mn]\b"
 )
+_BARE_POR_PRICE = re.compile(
+    rf"\bpor\s*:?\s*(?P<num>{_NUM})(?!\d)",
+    re.IGNORECASE,
+)
+_BARE_UNIT_AFTER = re.compile(
+    r"^\s*(?:x\b|×|gb\b|tb\b|mb\b|%|hz\b|w\b|mm\b|cm\b|m\b|kg\b|g\b"
+    r"|horas?\b|dias?\b|mes(?:es)?\b|anos?\b|vezes?\b|unidades?\b)"
+)
+_NORM_COUPON_RE = re.compile(
+    r"\b(?:cupo[mn]s?|coupon|codigo|code)\b\W{0,4}(?:de\W+desconto\W{0,3})?"
+    r"(?P<code>[a-z0-9][a-z0-9_-]{2,30})(?:\s*\+\s*(?P<code2>[a-z0-9][a-z0-9_-]{2,30}))?",
+)
 _PCT_OFF = re.compile(r"(?P<p>\d{1,2})\s*%\s*(?:off|de\s+desconto|desconto)")
 
 
@@ -199,6 +211,22 @@ def _parse_line(raw: str, number: int, terms: Terms) -> None:
             PricePoint(method, amount, currency, number, coupon_applied=coupon_applied)
         )
 
+    if not taken:
+        for m in _BARE_POR_PRICE.finditer(raw):
+            raw_num = m.group("num")
+            if "." not in raw_num and "," not in raw_num and len(raw_num) < 3:
+                continue
+            amount = parse_amount(raw_num)
+            if amount is None or amount <= 0:
+                continue
+            before, after = _context(norm, m.start("num"), m.end("num"))
+            if _BARE_UNIT_AFTER.search(after) or _OTHER_AFTER.search(after):
+                continue
+            method = _upfront_method(before, after, norm)
+            terms.points.append(
+                PricePoint(method, amount, "BRL", number, coupon_applied=coupon_applied)
+            )
+
 
 def _stated_installments(
     terms: Terms,
@@ -313,6 +341,14 @@ def parse_terms(text: str) -> Terms:
         code = _coupon_ok(m.group("code"))
         if code and code not in codes:
             codes.append(code)
+    for m in _NORM_COUPON_RE.finditer(norm):
+        for group in ("code", "code2"):
+            raw_code = m.group(group)
+            if not raw_code:
+                continue
+            code = _coupon_ok(raw_code.upper())
+            if code and code not in codes:
+                codes.append(code)
     terms.coupons = tuple(codes)
     for m in _PCT_OFF.finditer(norm):
         window = norm[max(0, m.start() - 40) : m.end() + 40]
