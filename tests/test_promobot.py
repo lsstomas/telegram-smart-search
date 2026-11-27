@@ -425,7 +425,7 @@ class PromoBotTests(unittest.TestCase):
         # Menu flow: hist_new & home_new always send NEW messages (message_id=None)
         promo_menu.handle_action(self.db, self.bot, "hist_new", 20)
         self.assertIsNone(self.bot.messages[-1][1])
-        self.assertIn("Buscar histórico", self.bot.messages[-1][0])
+        self.assertIn("BUSCAR HISTÓRICO", self.bot.messages[-1][0])
         promo_menu.handle_action(self.db, self.bot, "home_new", 20)
         self.assertIsNone(self.bot.messages[-1][1])
 

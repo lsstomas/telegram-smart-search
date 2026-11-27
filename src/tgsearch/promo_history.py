@@ -259,7 +259,7 @@ def render_digest(
     above = [e for e in grouped if not e.within_ceiling]
 
     header_lines = [
-        "🔎 <b>HISTÓRICO DE OFERTAS</b>",
+        "<b>HISTÓRICO DE OFERTAS</b>",
         "",
         f"📦 <b>Produto:</b> {escape(title)}",
         f"🗓️ <b>Período:</b> {escape(period_label.capitalize())}",

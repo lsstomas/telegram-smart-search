@@ -218,20 +218,23 @@ def details(bot: Bot, alert: Alert, message_id: int | None, status: str = "") ->
 
 def _send_history_picker(db: sqlite3.Connection, bot: Bot, message_id: int | None) -> None:
     items = alerts(db)
+    opts = {"parse_mode": "HTML"}
     if not items:
         bot.message(
-            "🔎 Buscar histórico\n\nCrie um alerta primeiro para buscar o histórico dele.",
+            "<b>BUSCAR HISTÓRICO</b>\n\nCrie um alerta primeiro para consultar o histórico.",
             message_id=message_id,
             reply_markup=keyboard((("➕ Novo alerta", "new"),), (("Voltar", "home"),)),
+            **opts,
         )
         return
-    rows = [((f"🔎 {a.label}", f"hist_pick:{a.id}"),) for a in items]
-    rows.append((("📦 Todos os alertas ativos", "hist_pick:all"),))
+    rows = [((f"📦 {a.label}", f"hist_pick:{a.id}"),) for a in items]
+    rows.append((("📋 Todos os alertas ativos", "hist_pick:all"),))
     rows.append((("Voltar", "home"),))
     bot.message(
-        "🔎 Buscar histórico\n\nQual produto você quer verificar nos seus canais?",
+        "<b>BUSCAR HISTÓRICO</b>\n\nEscolha o produto para consultar nos seus canais:",
         message_id=message_id,
         reply_markup=keyboard(*rows),
+        **opts,
     )
 
 
@@ -832,22 +835,29 @@ def handle_action(
         put(db, "step", "")
         target = match.group(1)
         if target == "all":
-            label = "Todos os alertas ativos"
+            header = "<b>BUSCAR HISTÓRICO</b>\n\n📋 <b>Escopo:</b> Todos os alertas ativos"
             back_action = "hist"
         else:
             alert = next((a for a in alerts(db) if a.id == int(target)), None)
             if alert is None:
                 return
-            label = alert.label
+            header = (
+                "<b>BUSCAR HISTÓRICO</b>\n\n"
+                f"📦 <b>Produto:</b> {escape(alert.label)}\n"
+                f"🎯 <b>Teto atual:</b> {money(alert.ceiling)}"
+            )
             back_action = f"view:{alert.id}"
         bot.message(
-            f"🔎 Histórico · {label}\n\nQual período você quer buscar?",
+            f"{header}\n\nEscolha o período da busca:",
             message_id=message_id,
             reply_markup=keyboard(
-                (("🕒 Últimas 24 horas", f"hist_run:{target}:24"),),
-                (("📅 Últimos 7 dias", f"hist_run:{target}:168"),),
+                (
+                    ("🕒 Últimas 24h", f"hist_run:{target}:24"),
+                    ("📅 Últimos 7 dias", f"hist_run:{target}:168"),
+                ),
                 (("Voltar", back_action),),
             ),
+            parse_mode="HTML",
         )
     elif match := re.fullmatch(r"hist_run:(all|\d+):(24|168)", action):
         put(db, "step", "")
