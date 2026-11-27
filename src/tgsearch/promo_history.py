@@ -30,7 +30,6 @@ MAX_HTML_CHARS = 3700
 MAX_UNDER_CEILING = 12
 ABOVE_PAGE_SIZE = 5
 MAX_POSTS_PER_CARD = 15
-DIVIDER = "━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 
 @dataclass
@@ -174,11 +173,13 @@ def group_history_entries(entries: Sequence[HistoryEntry]) -> list[HistoryEntry]
 
 
 def format_offer_card(entry: HistoryEntry, *, best: bool, show_title: bool) -> str:
-    """Render one clean, airy blockquote card with minimal emojis and full post list."""
+    """Render one clean, airy blockquote card with balanced emojis and full post list."""
     offer = entry.offer
-    dt_str = entry.seen_at.astimezone(BRT).strftime("%d/%m às %H:%M")
+    local_dt = entry.seen_at.astimezone(BRT)
+    date_str = local_dt.strftime("%d/%m")
+    time_str = local_dt.strftime("%H:%M")
     store = promo_delivery.store_display(offer.store) or "Loja não identificada"
-    badge = "🏆 " if best else ""
+    badge = "🏆 " if best else "💰 "
     if show_title:
         head = (
             f"{badge}<b>{escape(offer.title)}</b>\n"
@@ -189,25 +190,27 @@ def format_offer_card(entry: HistoryEntry, *, best: bool, show_title: bool) -> s
 
     details: list[str] = []
     if offer.payment_method and offer.payment_method != "Não informada":
-        details.append(f"Pagamento: {escape(offer.payment_method)}")
+        details.append(f"💳 Pagamento: {escape(offer.payment_method)}")
     if offer.installments:
-        details.append(f"Parcelas: {escape(offer.installments)}")
+        details.append(f"🧾 Parcelas: {escape(offer.installments)}")
     if offer.coupons:
         codes = ", ".join(f"<code>{escape(c)}</code>" for c in offer.coupons)
-        details.append(f"Cupom: {codes}")
+        details.append(f"🎟️ Cupom: {codes}")
     if offer.shipping is not None:
         freight = (
-            f"Frete: {promo_delivery.money(offer.shipping)}" if offer.shipping else "Frete grátis"
+            f"🚚 Frete: {promo_delivery.money(offer.shipping)}"
+            if offer.shipping
+            else "🚚 Frete grátis"
         )
         details.append(freight)
     if offer.seller:
-        details.append(f"Vendedor: {escape(offer.seller[:60])}")
-    details.append(dt_str)
+        details.append(f"🏷️ Vendedor: {escape(offer.seller[:60])}")
+    details.append(f"📅 {date_str} · 🕒 {time_str}")
 
     sections = [head, "\n".join(details)]
 
     if offer.buy_url and promo_delivery.valid_url(offer.buy_url):
-        sections.append(promo_delivery.link(offer.buy_url, "Abrir oferta"))
+        sections.append(f"🛒 {promo_delivery.link(offer.buy_url, 'Abrir oferta')}")
 
     valid_posts = [
         (url, clean_channel_label(title))
@@ -256,18 +259,18 @@ def render_digest(
     above = [e for e in grouped if not e.within_ceiling]
 
     header_lines = [
-        "<b>HISTÓRICO DE OFERTAS</b>",
+        "🔎 <b>HISTÓRICO DE OFERTAS</b>",
         "",
-        f"<b>Produto:</b> {escape(title)}",
-        f"<b>Período:</b> {escape(period_label.capitalize())}",
+        f"📦 <b>Produto:</b> {escape(title)}",
+        f"🗓️ <b>Período:</b> {escape(period_label.capitalize())}",
     ]
     if ceiling is not None and not multi_product:
-        header_lines.append(f"<b>Teto:</b> {promo_delivery.money(ceiling)}")
+        header_lines.append(f"🎯 <b>Teto:</b> {promo_delivery.money(ceiling)}")
     header = "\n".join(header_lines)
 
     if not grouped:
         msg = (
-            f"{header}\n\n\n{DIVIDER}\n\n\n"
+            f"{header}\n\n\n"
             "<blockquote>Nenhuma promoção encontrada nos canais monitorados "
             "nesse período.</blockquote>"
         )
@@ -278,7 +281,7 @@ def render_digest(
     under_count = len(under)
     under_word = "oferta" if under_count == 1 else "ofertas"
     if under:
-        blocks.append(f"\n{DIVIDER}\n\n<b>DENTRO DO TETO</b> · {under_count} {under_word}")
+        blocks.append(f"\n✅ <b>DENTRO DO TETO</b> · {under_count} {under_word}")
         for idx, entry in enumerate(under[:MAX_UNDER_CEILING]):
             blocks.append(format_offer_card(entry, best=(idx == 0), show_title=multi_product))
         if under_count > MAX_UNDER_CEILING:
@@ -286,7 +289,7 @@ def render_digest(
             blocks.append(f"<i>… e mais {extra} ofertas dentro do teto.</i>")
     else:
         blocks.append(
-            f"\n{DIVIDER}\n\n<b>DENTRO DO TETO</b> · 0 ofertas\n\n"
+            "\n✅ <b>DENTRO DO TETO</b> · 0 ofertas\n\n"
             "<blockquote>Nenhuma oferta ficou dentro do seu teto nesse período.</blockquote>"
         )
 
@@ -295,8 +298,7 @@ def render_digest(
         above_word = "oferta" if above_count == 1 else "ofertas"
         lowest = promo_delivery.money(above[0].offer.price)
         blocks.append(
-            f"\n{DIVIDER}\n\n"
-            f"<b>ACIMA DO TETO</b> · {above_count} {above_word} (menor: <b>{lowest}</b>)"
+            f"\n📊 <b>ACIMA DO TETO</b> · {above_count} {above_word} (menor: <b>{lowest}</b>)"
         )
 
     return _paginate_blocks(blocks), above
@@ -318,16 +320,16 @@ def render_above_page(
     end_num = offset + len(page)
 
     header_lines = [
-        "<b>OFERTAS ACIMA DO TETO</b>",
+        "📊 <b>OFERTAS ACIMA DO TETO</b>",
         "",
-        f"<b>Produto:</b> {escape(title)}",
-        f"<b>Período:</b> {escape(period_label.capitalize())}",
+        f"📦 <b>Produto:</b> {escape(title)}",
+        f"🗓️ <b>Período:</b> {escape(period_label.capitalize())}",
     ]
     if ceiling is not None and not multi_product:
-        header_lines.append(f"<b>Teto:</b> {promo_delivery.money(ceiling)}")
-    header_lines.append(f"<b>Mostrando:</b> {start_num} a {end_num} de {len(above)}")
+        header_lines.append(f"🎯 <b>Teto:</b> {promo_delivery.money(ceiling)}")
+    header_lines.append(f"📄 <b>Mostrando:</b> {start_num} a {end_num} de {len(above)}")
 
-    blocks = ["\n".join(header_lines), f"\n{DIVIDER}"]
+    blocks = ["\n".join(header_lines) + "\n"]
     for idx, entry in enumerate(page):
         blocks.append(
             format_offer_card(entry, best=(offset == 0 and idx == 0), show_title=multi_product)
@@ -337,7 +339,7 @@ def render_above_page(
 
 def render_channels(channels: Sequence[ChannelEntry]) -> list[str]:
     header = (
-        f"<b>CANAIS MONITORADOS ({len(channels)})</b>\n\n"
+        f"📡 <b>CANAIS MONITORADOS ({len(channels)})</b>\n\n"
         "Estes são os canais e grupos consultados nas buscas:"
     )
     if not channels:
@@ -355,7 +357,7 @@ def render_channels(channels: Sequence[ChannelEntry]) -> list[str]:
 
     messages: list[str] = []
     chunk: list[str] = []
-    prefix = f"{header}\n\n{DIVIDER}\n\n"
+    prefix = f"{header}\n\n"
     for line in lines:
         candidate = prefix + "\n".join(chunk + [line])
         if len(candidate) > MAX_HTML_CHARS and chunk:
