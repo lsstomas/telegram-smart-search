@@ -73,6 +73,7 @@ SELLER = re.compile(
 )
 EXTRA_STORE_HOSTS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("amazon", ("link.amazon",)),
+    ("kabum", ("kb1.me",)),
     ("mercadolivre", ("meli.la",)),
     ("fastshop", ("fastshop.com.br",)),
     ("carrefour", ("carrefour.com.br",)),
