@@ -389,24 +389,44 @@ class PromoBotTests(unittest.TestCase):
             within_ceiling=False,
             alert_ceiling=495000,
         )
+        e_above2 = promo_history.HistoryEntry(
+            offer=replace(e_above.offer, price=503028, posts={"https://t.me/d/4": "Canal D"}),
+            seen_at=t2,
+            within_ceiling=False,
+            alert_ceiling=495000,
+        )
         chunks = promo_history.render_digest(
-            "iPhone 17 256 GB", "últimas 24 horas", [e1, e2, e_above]
+            "iPhone 17 256 GB",
+            "últimas 24 horas",
+            [e1, e2, e_above, e_above2],
+            ceiling=495000,
         )
         self.assertEqual(len(chunks), 1)
         body = chunks[0]
         self.assertIn("Dentro do teto (1)", body)
-        self.assertIn("Canal A", body)
-        self.assertIn("Canal B", body)
-        self.assertIn("R$ 4.399,00", body)
-        self.assertIn("Menores preços acima do teto", body)
-        self.assertIn("R$ 5.030,00", body)
+        self.assertIn("<blockquote>🏆 <b>R$ 4.399,00</b>", body)
+        self.assertIn("2 posts", body)
+        self.assertIn("<blockquote expandable>📊 <b>Acima do teto", body)
+        # R$ 5.030,00 and R$ 5.030,28 above ceiling merge into 1 entry
+        self.assertIn("1 menores (de 1)", body)
 
-        # Menu flow: hist -> hist_pick -> period options
-        promo_menu.handle_action(self.db, self.bot, "hist", 20)
+        # Menu flow: hist_new & home_new always send NEW messages (message_id=None)
+        promo_menu.handle_action(self.db, self.bot, "hist_new", 20)
+        self.assertIsNone(self.bot.messages[-1][1])
         self.assertIn("Buscar histórico", self.bot.messages[-1][0])
-        alert = promo_menu.alerts(self.db)[-1]
-        promo_menu.handle_action(self.db, self.bot, f"hist_pick:{alert.id}", 20)
-        self.assertIn("Qual período", self.bot.messages[-1][0])
+        promo_menu.handle_action(self.db, self.bot, "home_new", 20)
+        self.assertIsNone(self.bot.messages[-1][1])
+
+        # Channel listing rendering
+        ch_chunks = promo_history.render_channels(
+            [
+                promo_history.ChannelEntry("-1001", "Show de Ofertas", "showofertas2", "channel"),
+                promo_history.ChannelEntry("-1002", "Canal Privado", "", "channel"),
+            ]
+        )
+        self.assertIn("Canais monitorados (2)", ch_chunks[0])
+        self.assertIn("@showofertas2", ch_chunks[0])
+        self.assertIn("(privado)", ch_chunks[0])
 
 
 if __name__ == "__main__":

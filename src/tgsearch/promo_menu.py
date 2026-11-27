@@ -10,7 +10,8 @@ import sqlite3
 import sys
 import time
 from contextlib import closing
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+from html import escape
 from pathlib import Path
 
 from .extract import parse_amount
@@ -40,6 +41,7 @@ DEFAULT_FILTERS = {
     "include": [],
     "exclude": [],
 }
+CHANNELS_CACHE_SECONDS = 6 * 3600
 
 
 @dataclass(frozen=True)
@@ -116,9 +118,9 @@ def keyboard(*rows):
 
 
 HOME = keyboard(
-    (("➕ Novo alerta", "new"),),
-    (("📋 Meus alertas", "list"),),
+    (("➕ Novo alerta", "new"), ("📋 Meus alertas", "list")),
     (("🔎 Buscar histórico", "hist"),),
+    (("📡 Canais monitorados", "channels"),),
 )
 BACK = keyboard((("Voltar", "home"),))
 
@@ -199,12 +201,30 @@ def details(bot: Bot, alert: Alert, message_id: int | None, status: str = "") ->
     )
 
 
+def _send_history_picker(db: sqlite3.Connection, bot: Bot, message_id: int | None) -> None:
+    items = alerts(db)
+    if not items:
+        bot.message(
+            "🔎 Buscar histórico\n\nCrie um alerta primeiro para buscar o histórico dele.",
+            message_id=message_id,
+            reply_markup=keyboard((("➕ Novo alerta", "new"),), (("Voltar", "home"),)),
+        )
+        return
+    rows = [((f"🔎 {a.label}", f"hist_pick:{a.id}"),) for a in items]
+    rows.append((("📦 Todos os alertas ativos", "hist_pick:all"),))
+    rows.append((("Voltar", "home"),))
+    bot.message(
+        "🔎 Buscar histórico\n\nQual produto você quer verificar nos seus canais?",
+        message_id=message_id,
+        reply_markup=keyboard(*rows),
+    )
+
+
 def _run_history_lookup(
     db: sqlite3.Connection,
     bot: Bot,
     target: str,
     hours: int,
-    message_id: int,
     *,
     state_path: Path | None,
     sources_file: Path | None,
@@ -215,35 +235,42 @@ def _run_history_lookup(
     if target == "all":
         selected = alerts(db, active_only=True)
         title = "Todos os alertas ativos"
+        ceiling = None
+        multi = True
     else:
         alert = next((a for a in alerts(db) if a.id == int(target)), None)
         if alert is None:
-            bot.message("Alerta não encontrado.", message_id=message_id, reply_markup=HOME)
+            bot.message("Alerta não encontrado.", reply_markup=HOME)
             return
         selected = [alert]
         title = alert.label
+        ceiling = alert.ceiling
+        multi = False
 
     if not selected:
-        bot.message(
-            "Nenhum alerta ativo para buscar.",
-            message_id=message_id,
-            reply_markup=HOME,
-        )
+        bot.message("Nenhum alerta ativo para buscar.", reply_markup=HOME)
         return
 
     period_label = "últimas 24 horas" if hours <= 24 else f"últimos {hours // 24} dias"
-    bot.message(
+    channel_count = len(promo_history.read_sources(sources_file))
+    count_hint = f"os {channel_count} canais" if channel_count else "os seus canais"
+    opts = {"parse_mode": "HTML", "link_preview_options": {"is_disabled": True}}
+
+    # Always send a NEW message so previous history searches stay preserved in the chat!
+    loading = bot.message(
         (
-            f"🔎 Buscando promoções de {title} ({period_label}) nos seus canais...\n"
-            "Aguarde alguns segundos."
+            f"🔎 <b>{escape(title)}</b> · {escape(period_label)}\n\n"
+            f"<blockquote>⏳ Varrendo {count_hint} monitorados…</blockquote>"
         ),
-        message_id=message_id,
+        **opts,
     )
+    result_mid = loading["message_id"]
+
     if state_path is None:
         bot.message(
             "Busca de histórico indisponível sem caminho de banco configurado.",
-            message_id=message_id,
-            reply_markup=HOME,
+            message_id=result_mid,
+            reply_markup=keyboard((("🏠 Menu", "home_new"),)),
         )
         return
     try:
@@ -257,18 +284,108 @@ def _run_history_lookup(
     except Exception as exc:
         print(f"promo_history error: {exc}", file=sys.stderr, flush=True)
         bot.message(
-            "Não consegui buscar no Telegram agora. Tente novamente em instantes.",
-            message_id=message_id,
-            reply_markup=keyboard((("Voltar ao menu", "home"),)),
+            (
+                f"🔎 <b>{escape(title)}</b> · {escape(period_label)}\n\n"
+                "<blockquote>Não consegui buscar no Telegram agora. Tente novamente em instantes."
+                "</blockquote>"
+            ),
+            message_id=result_mid,
+            reply_markup=keyboard((("🔎 Tentar novamente", f"hist_run:{target}:{hours}"),)),
+            **opts,
         )
         return
 
-    chunks = promo_history.render_digest(title, period_label, entries)
-    nav = keyboard((("🔎 Nova busca", "hist"), ("Menu", "home")))
-    opts = {"parse_mode": "HTML", "link_preview_options": {"is_disabled": True}}
+    chunks = promo_history.render_digest(
+        title,
+        period_label,
+        entries,
+        ceiling=ceiling,
+        multi_product=multi,
+    )
+    other_hours = 168 if hours <= 24 else 24
+    other_label = "📅 Ver 7 dias" if other_hours == 168 else "🕒 Ver 24h"
+    # Footer buttons send NEW messages so this search stays permanently in the chat!
+    nav = keyboard(
+        ((other_label, f"hist_run:{target}:{other_hours}"), ("🔎 Nova busca", "hist_new")),
+        (("🏠 Menu", "home_new"),),
+    )
     bot.message(
         chunks[0],
-        message_id=message_id,
+        message_id=result_mid,
+        reply_markup=nav if len(chunks) == 1 else None,
+        **opts,
+    )
+    for idx, chunk in enumerate(chunks[1:], start=1):
+        is_last = idx == len(chunks) - 1
+        bot.message(chunk, reply_markup=nav if is_last else None, **opts)
+
+
+def _show_channels(
+    db: sqlite3.Connection,
+    bot: Bot,
+    message_id: int | None,
+    *,
+    force_refresh: bool,
+    state_path: Path | None,
+    sources_file: Path | None,
+    session: Path | None,
+) -> None:
+    from . import promo_history
+
+    opts = {"parse_mode": "HTML", "link_preview_options": {"is_disabled": True}}
+    channels: list[promo_history.ChannelEntry] | None = None
+    now = int(time.time())
+
+    if not force_refresh:
+        cached_raw = get(db, "channels_cache")
+        cached_at = int(get(db, "channels_cache_at") or 0)
+        if cached_raw and now - cached_at < CHANNELS_CACHE_SECONDS:
+            try:
+                channels = [promo_history.ChannelEntry(**row) for row in json.loads(cached_raw)]
+            except (ValueError, TypeError):
+                channels = None
+
+    if channels is None:
+        loading = bot.message(
+            "📡 <b>Canais monitorados</b>\n\n"
+            "<blockquote>⏳ Carregando lista de canais…</blockquote>",
+            message_id=message_id,
+            **opts,
+        )
+        target_mid = message_id if message_id is not None else loading["message_id"]
+        if state_path is None:
+            raw = promo_history.read_sources(sources_file)
+            channels = [promo_history.ChannelEntry(r, r, "", "channel") for r in raw]
+        else:
+            try:
+                channels = promo_history.list_monitored_channels(
+                    state_path,
+                    sources_file=sources_file,
+                    session=session,
+                )
+                put(db, "channels_cache", json.dumps([asdict(c) for c in channels]))
+                put(db, "channels_cache_at", str(now))
+            except Exception as exc:
+                print(f"promo_channels error: {exc}", file=sys.stderr, flush=True)
+                bot.message(
+                    "📡 <b>Canais monitorados</b>\n\n"
+                    "<blockquote>Não consegui carregar os canais agora. "
+                    "Tente novamente.</blockquote>",
+                    message_id=target_mid,
+                    reply_markup=keyboard(
+                        (("🔄 Tentar novamente", "channels_refresh"), ("Voltar", "home"))
+                    ),
+                    **opts,
+                )
+                return
+    else:
+        target_mid = message_id
+
+    chunks = promo_history.render_channels(channels)
+    nav = keyboard((("🔄 Atualizar lista", "channels_refresh"), ("🏠 Menu", "home_new")))
+    bot.message(
+        chunks[0],
+        message_id=target_mid,
         reply_markup=nav if len(chunks) == 1 else None,
         **opts,
     )
@@ -393,11 +510,11 @@ def handle_action(
     sources_file: Path | None = None,
     session: Path | None = None,
 ) -> None:
-    if action == "home":
+    if action in {"home", "home_new"}:
         put(db, "step", "")
         bot.message(
             "⚡ PromoBot\n\nO que você quer fazer?",
-            message_id=message_id,
+            message_id=None if action == "home_new" else message_id,
             reply_markup=HOME,
         )
     elif action == "new":
@@ -426,23 +543,19 @@ def handle_action(
             message_id=message_id,
             reply_markup=keyboard(*rows),
         )
-    elif action == "hist":
+    elif action in {"hist", "hist_new"}:
         put(db, "step", "")
-        items = alerts(db)
-        if not items:
-            bot.message(
-                "🔎 Buscar histórico\n\nCrie um alerta primeiro para buscar o histórico dele.",
-                message_id=message_id,
-                reply_markup=keyboard((("➕ Novo alerta", "new"),), (("Voltar", "home"),)),
-            )
-            return
-        rows = [((f"🔎 {a.label}", f"hist_pick:{a.id}"),) for a in items]
-        rows.append((("📦 Todos os alertas ativos", "hist_pick:all"),))
-        rows.append((("Voltar", "home"),))
-        bot.message(
-            "🔎 Buscar histórico\n\nQual produto você quer verificar nos seus canais?",
-            message_id=message_id,
-            reply_markup=keyboard(*rows),
+        _send_history_picker(db, bot, None if action == "hist_new" else message_id)
+    elif action in {"channels", "channels_refresh"}:
+        put(db, "step", "")
+        _show_channels(
+            db,
+            bot,
+            message_id if action == "channels_refresh" else None,
+            force_refresh=(action == "channels_refresh"),
+            state_path=state_path,
+            sources_file=sources_file,
+            session=session,
         )
     elif match := re.fullmatch(r"hist_pick:(all|\d+)", action):
         put(db, "step", "")
@@ -472,7 +585,6 @@ def handle_action(
             bot,
             match.group(1),
             int(match.group(2)),
-            message_id,
             state_path=state_path,
             sources_file=sources_file,
             session=session,
