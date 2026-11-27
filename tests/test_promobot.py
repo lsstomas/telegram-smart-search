@@ -263,6 +263,95 @@ class PromoBotTests(unittest.TestCase):
             list(watch.promo_matches(used, "channel", [(alert, watch.PROMO_PHONE_PROFILE)])), []
         )
 
+    def test_30d_edge_cases_and_configurable_filters(self):
+        # 1. Line 1 regular price + Line 2 deal price (conflicting_amounts recovery)
+        rx = next(a for a in promo_menu.alerts(self.db) if a.product == "rx7600")
+        p_dual = Message(
+            "Crowman",
+            10,
+            None,
+            "🔥 Placa De Vídeo Asrock Rx 7600 Challenger Pro Oc Amd Radeon R$ 1.989\n"
+            "💵 R$ 1651\n"
+            "🎟 Cupom: MODOTECH\n"
+            "https://meli.la/1uNPNab",
+            link="https://t.me/crowman/10",
+        )
+        (o_dual,) = watch.promo_matches(p_dual, "channel", [(rx, watch.profile_for_alert(rx))])
+        self.assertEqual(o_dual.price, 165100)
+
+        # 2. "DESCONTO NA FINALIZAÇÃO" after price is a checkout-discounted price, not discount amt
+        p_fin = Message(
+            "Talk PC",
+            11,
+            None,
+            "🔥 Placa de Vídeo ASRock RX 7600 Challenger PRO OC AMD Radeon, 8GB\n"
+            "💰 R$ 1647 DESCONTO NA FINALIZAÇÃO\n"
+            "https://s.shopee.com.br/abc",
+            link="https://t.me/talkpc/11",
+        )
+        (o_fin,) = watch.promo_matches(p_fin, "channel", [(rx, watch.profile_for_alert(rx))])
+        self.assertEqual(o_fin.price, 164700)
+
+        # 3. Joke headline mentioning old iPhone 6 + real iPhone 17e 256 GB deal
+        p17e = next(a for a in promo_menu.alerts(self.db) if a.product == "17e")
+        p_joke = Message(
+            "Caça ofertas",
+            12,
+            None,
+            "O IPHONE 6 DEPOIS DE TOMAR BOMBA\n"
+            "📱 *Apple iPhone 17e 256 GB (branco e preto)*\n"
+            "🔥 ~DE 5.729~ | *POR 3.699 no Pix*\n"
+            "🎟 _Resgate o cupom: SMART10_\n"
+            "🔗 https://link.amazon/abc",
+            link="https://t.me/caca/12",
+        )
+        (o_joke,) = watch.promo_matches(p_joke, "channel", [(p17e, watch.profile_for_alert(p17e))])
+        self.assertEqual((o_joke.store, o_joke.price), ("amazon", 369900))
+
+        # 4. Configurable filters in Telegram menu: allow cashback + add excluded word
+        p_cash = Message(
+            "Canal",
+            13,
+            None,
+            "iPhone 17e 256 GB Rosa com cashback\nR$ 3.600,00 no Pix\nhttps://meli.la/c1",
+            link="https://t.me/canal/13",
+        )
+        # Blocked by default (block_restrictions=True)
+        self.assertEqual(
+            list(watch.promo_matches(p_cash, "channel", [(p17e, watch.profile_for_alert(p17e))])),
+            [],
+        )
+        # Disable block_restrictions via menu callback
+        promo_menu.handle_action(self.db, self.bot, f"flt:{p17e.id}:block_restrictions:0", 10)
+        p17e_upd = next(a for a in promo_menu.alerts(self.db) if a.id == p17e.id)
+        (o_cash,) = watch.promo_matches(
+            p_cash, "channel", [(p17e_upd, watch.profile_for_alert(p17e_upd))]
+        )
+        self.assertEqual(o_cash.price, 360000)
+
+        # Add "rosa" to excluded words via menu
+        promo_menu.handle_action(self.db, self.bot, f"flt_words:{p17e.id}:exclude", 11)
+        promo_menu.handle(
+            self.db,
+            self.bot,
+            {"message": {"chat": {"type": "private", "id": 123}, "text": "rosa, usado"}},
+        )
+        p17e_exc = next(a for a in promo_menu.alerts(self.db) if a.id == p17e.id)
+        self.assertEqual(
+            list(
+                watch.promo_matches(
+                    p_cash, "channel", [(p17e_exc, watch.profile_for_alert(p17e_exc))]
+                )
+            ),
+            [],
+        )
+
+        # Reset filters back to defaults
+        promo_menu.handle_action(self.db, self.bot, f"flt_reset:{p17e.id}", 12)
+        p17e_rst = next(a for a in promo_menu.alerts(self.db) if a.id == p17e.id)
+        self.assertEqual(p17e_rst.filter_config()["exclude"], [])
+        self.assertTrue(p17e_rst.filter_config()["block_restrictions"])
+
 
 if __name__ == "__main__":
     unittest.main()

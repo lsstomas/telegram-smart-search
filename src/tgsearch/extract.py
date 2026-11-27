@@ -52,7 +52,9 @@ _OTHER_BEFORE = re.compile(
     r"\W*(?:de\W*)?$"
 )
 _OTHER_AFTER = re.compile(
-    r"^\W*(?:off\b|de desconto|desconto|de cashback|cashback|em compras|de frete|de economia)"
+    r"^\W*(?:off\b|de desconto"
+    r"|desconto(?!\s+(?:na\s+finalizacao|no\s+carrinho|automatico|no\s+checkout))"
+    r"|de cashback|cashback|em compras|de frete|de economia)"
 )
 _FROM_BEFORE = re.compile(r"\bpartir\W+de\W*$")
 _ORIGINAL_BEFORE = re.compile(r"(?:\bde|\bantes|\bera|\bnormal)\W*$")

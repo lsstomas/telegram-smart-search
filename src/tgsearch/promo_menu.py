@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import sqlite3
@@ -25,10 +26,20 @@ DEFAULT_ALERTS = (
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS promo_alerts (
     id INTEGER PRIMARY KEY, product TEXT UNIQUE NOT NULL, label TEXT NOT NULL,
-    ceiling INTEGER NOT NULL, paused INTEGER NOT NULL DEFAULT 0
+    ceiling INTEGER NOT NULL, paused INTEGER NOT NULL DEFAULT 0,
+    filters TEXT NOT NULL DEFAULT '{}'
 );
 CREATE TABLE IF NOT EXISTS promo_menu (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 """
+DEFAULT_FILTERS = {
+    "mode": "smart",  # "smart" (built-in rules) or "broad" (keywords + ceiling only)
+    "block_used": True,
+    "block_restrictions": True,
+    "require_sealed": False,
+    "require_url": True,
+    "include": [],
+    "exclude": [],
+}
 
 
 @dataclass(frozen=True)
@@ -38,11 +49,32 @@ class Alert:
     label: str
     ceiling: int
     paused: int
+    filters: str = "{}"
+
+    def filter_config(self) -> dict:
+        cfg = dict(DEFAULT_FILTERS)
+        cfg["include"] = []
+        cfg["exclude"] = []
+        if self.product not in {"17", "17e"}:
+            cfg["require_url"] = False
+        try:
+            raw = json.loads(self.filters or "{}")
+            if isinstance(raw, dict):
+                for key in DEFAULT_FILTERS:
+                    if key in raw:
+                        cfg[key] = raw[key]
+        except ValueError:
+            pass
+        return cfg
 
 
 def init(db: sqlite3.Connection, *, seed_defaults: bool | None = None) -> None:
     configure_db(db)
     db.executescript(SCHEMA)
+    cols = {row[1] for row in db.execute("PRAGMA table_info(promo_alerts)")}
+    if "filters" not in cols:
+        with db:
+            db.execute("ALTER TABLE promo_alerts ADD COLUMN filters TEXT NOT NULL DEFAULT '{}'")
     if seed_defaults is None:
         seed_defaults = os.getenv("TGSEARCH_SEED_DEFAULTS", "").strip() == "1"
     if seed_defaults:
@@ -55,8 +87,8 @@ def init(db: sqlite3.Connection, *, seed_defaults: bool | None = None) -> None:
 
 def alerts(db: sqlite3.Connection, *, active_only: bool = False) -> list[Alert]:
     where = " WHERE paused = 0" if active_only else ""
-    query = "SELECT * FROM promo_alerts" + where + " ORDER BY id"
-    return [Alert(*row) for row in db.execute(query)]
+    query = "SELECT id, product, label, ceiling, paused, filters FROM promo_alerts" + where
+    return [Alert(*row) for row in db.execute(query + " ORDER BY id")]
 
 
 def get(db: sqlite3.Connection, key: str) -> str:
@@ -66,6 +98,13 @@ def get(db: sqlite3.Connection, key: str) -> str:
 
 def put(db: sqlite3.Connection, key: str, value: str) -> None:
     db.execute("INSERT OR REPLACE INTO promo_menu VALUES (?, ?)", (key, value))
+
+
+def save_filters(db: sqlite3.Connection, alert_id: int, cfg: dict) -> None:
+    db.execute(
+        "UPDATE promo_alerts SET filters = ? WHERE id = ?",
+        (json.dumps(cfg, ensure_ascii=False), alert_id),
+    )
 
 
 def keyboard(*rows):
@@ -80,10 +119,68 @@ HOME = keyboard((("➕ Novo alerta", "new"),), (("📋 Meus alertas", "list"),))
 BACK = keyboard((("Voltar", "home"),))
 
 
+def _filter_summary(alert: Alert) -> str:
+    cfg = alert.filter_config()
+    mode_label = "Inteligente" if cfg["mode"] == "smart" else "Amplo (só nome + teto)"
+    lines = [f"⚙️ Filtros · {alert.label}", "", f"• Modo: {mode_label}"]
+    lines.append(f"• Bloquear usados/vitrine: {'Sim' if cfg['block_used'] else 'Não'}")
+    if alert.product in {"17", "17e"}:
+        lines.append(
+            f"• Bloquear cashback/troca/plano: {'Sim' if cfg['block_restrictions'] else 'Não'}"
+        )
+        lines.append(f"• Exigir palavra 'lacrado': {'Sim' if cfg['require_sealed'] else 'Não'}")
+    lines.append(f"• Exigir link de loja: {'Sim' if cfg['require_url'] else 'Não'}")
+    inc = ", ".join(cfg["include"]) if cfg["include"] else "nenhuma"
+    exc = ", ".join(cfg["exclude"]) if cfg["exclude"] else "nenhuma"
+    lines.append(f"• Palavras obrigatórias: {inc}")
+    lines.append(f"• Palavras bloqueadas: {exc}")
+    return "\n".join(lines)
+
+
+def filter_menu(bot: Bot, alert: Alert, message_id: int | None, status: str = "") -> None:
+    cfg = alert.filter_config()
+    text = _filter_summary(alert)
+    if status:
+        text = f"{status}\n\n{text}"
+    rows = []
+    if alert.product in {"rx7600", "rx7600xt", "17", "17e"}:
+        next_mode = "broad" if cfg["mode"] == "smart" else "smart"
+        mode_btn = "Modo: Inteligente ⇄" if cfg["mode"] == "smart" else "Modo: Amplo ⇄"
+        rows.append(((mode_btn, f"flt:{alert.id}:mode:{next_mode}"),))
+    used_btn = f"{'✅' if cfg['block_used'] else '❌'} Bloquear usados/vitrine"
+    rows.append(((used_btn, f"flt:{alert.id}:block_used:{int(not cfg['block_used'])}"),))
+    if alert.product in {"17", "17e"}:
+        rest_btn = f"{'✅' if cfg['block_restrictions'] else '❌'} Bloquear cashback/troca"
+        rows.append(
+            ((rest_btn, f"flt:{alert.id}:block_restrictions:{int(not cfg['block_restrictions'])}"),)
+        )
+        seal_btn = f"{'✅' if cfg['require_sealed'] else '❌'} Exigir 'lacrado'"
+        rows.append(
+            ((seal_btn, f"flt:{alert.id}:require_sealed:{int(not cfg['require_sealed'])}"),)
+        )
+    url_btn = f"{'✅' if cfg['require_url'] else '❌'} Exigir link da loja"
+    rows.append(((url_btn, f"flt:{alert.id}:require_url:{int(not cfg['require_url'])}"),))
+    rows.append(
+        (
+            ("➕ Obrigatórias", f"flt_words:{alert.id}:include"),
+            ("➖ Bloqueadas", f"flt_words:{alert.id}:exclude"),
+        )
+    )
+    rows.append((("🔄 Restaurar padrão", f"flt_reset:{alert.id}"), ("Voltar", f"view:{alert.id}")))
+    bot.message(text, message_id=message_id, reply_markup=keyboard(*rows))
+
+
 def details(bot: Bot, alert: Alert, message_id: int | None, status: str = "") -> None:
     state = "Pausado" if alert.paused else "Ativo"
     icon = "⏸" if alert.paused else "✅"
-    text = f"📦 {alert.label}\n💰 Teto: {money(alert.ceiling)}\n{icon} Status: {state}"
+    cfg = alert.filter_config()
+    mode_tag = "Inteligente" if cfg["mode"] == "smart" else "Amplo"
+    text = (
+        f"📦 {alert.label}\n"
+        f"💰 Teto: {money(alert.ceiling)}\n"
+        f"{icon} Status: {state}\n"
+        f"⚙️ Filtro: {mode_tag}"
+    )
     if status:
         text = f"{status}\n\n{text}"
     action = "Reativar" if alert.paused else "Pausar"
@@ -92,7 +189,7 @@ def details(bot: Bot, alert: Alert, message_id: int | None, status: str = "") ->
         message_id=message_id,
         reply_markup=keyboard(
             (("Mudar teto", f"cap:{alert.id}"), (action, f"toggle:{alert.id}:{1 - alert.paused}")),
-            (("Voltar", "list"),),
+            (("⚙️ Filtros", f"filters:{alert.id}"), ("Voltar", "list")),
         ),
     )
 
@@ -164,6 +261,25 @@ def handle(db: sqlite3.Connection, bot: Bot, update: dict) -> None:
         db.execute("UPDATE promo_alerts SET ceiling = ? WHERE id = ?", (cents(amount), alert_id))
         updated = next(a for a in alerts(db) if a.id == alert_id)
         details(bot, updated, None, "Teto atualizado.")
+    elif match := re.fullmatch(r"flt_words:(\d+):(include|exclude)", step):
+        alert_id = int(match.group(1))
+        field = match.group(2)
+        alert = next((a for a in alerts(db) if a.id == alert_id), None)
+        put(db, "step", "")
+        if alert is None:
+            bot.message("Alerta não encontrado.", reply_markup=HOME)
+            return
+        cfg = alert.filter_config()
+        if normalize(text) in {"limpar", "nenhuma", "nenhum", "-"}:
+            words: list[str] = []
+        else:
+            words = [w.strip() for w in re.split(r"[,;\n]+", text) if normalize(w)]
+            words = list(dict.fromkeys(w[:40] for w in words))[:15]
+        cfg[field] = words
+        save_filters(db, alert.id, cfg)
+        updated = next(a for a in alerts(db) if a.id == alert.id)
+        label = "Palavras obrigatórias" if field == "include" else "Palavras bloqueadas"
+        filter_menu(bot, updated, None, f"{label} atualizadas.")
     else:
         bot.message("⚡ PromoBot\n\nO que você quer fazer?", reply_markup=HOME)
 
@@ -209,6 +325,42 @@ def handle_action(db: sqlite3.Connection, bot: Bot, action: str, message_id: int
         put(db, "step", "")
         alert = next(a for a in alerts(db) if a.product == product)
         details(bot, alert, message_id, "Alerta criado.")
+    elif match := re.fullmatch(r"filters:(\d+)", action):
+        put(db, "step", "")
+        alert = next((a for a in alerts(db) if a.id == int(match.group(1))), None)
+        if alert is not None:
+            filter_menu(bot, alert, message_id)
+    elif match := re.fullmatch(r"flt_reset:(\d+)", action):
+        put(db, "step", "")
+        alert = next((a for a in alerts(db) if a.id == int(match.group(1))), None)
+        if alert is not None:
+            save_filters(db, alert.id, {})
+            updated = next(a for a in alerts(db) if a.id == alert.id)
+            filter_menu(bot, updated, message_id, "Filtros restaurados para o padrão.")
+    elif match := re.fullmatch(r"flt:(\d+):([a-z_]+):(smart|broad|[01])", action):
+        alert_id, field, raw_val = int(match.group(1)), match.group(2), match.group(3)
+        alert = next((a for a in alerts(db) if a.id == alert_id), None)
+        if alert is None or field not in DEFAULT_FILTERS:
+            return
+        put(db, "step", "")
+        cfg = alert.filter_config()
+        cfg[field] = raw_val if field == "mode" else bool(int(raw_val))
+        save_filters(db, alert.id, cfg)
+        updated = next(a for a in alerts(db) if a.id == alert.id)
+        filter_menu(bot, updated, message_id, "Filtro atualizado.")
+    elif match := re.fullmatch(r"flt_words:(\d+):(include|exclude)", action):
+        alert_id, field = int(match.group(1)), match.group(2)
+        alert = next((a for a in alerts(db) if a.id == alert_id), None)
+        if alert is None:
+            return
+        put(db, "step", f"flt_words:{alert.id}:{field}")
+        kind = "obrigatórias" if field == "include" else "bloqueadas"
+        bot.message(
+            f"Digite as palavras {kind} para {alert.label}, separadas por vírgula.\n"
+            f"Envie 'limpar' para remover todas.",
+            message_id=message_id,
+            reply_markup=keyboard((("Voltar", f"filters:{alert.id}"),)),
+        )
     elif match := re.fullmatch(r"(view|cap|toggle):(\d+)(?::([01]))?", action):
         command, alert_id, target = match.groups()
         alert = next((a for a in alerts(db) if a.id == int(alert_id)), None)

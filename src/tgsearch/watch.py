@@ -29,6 +29,7 @@ from .models import Message
 from .payment import PricePoint
 from .profiles import Profile, gpu_profile, offer_filter, terms_profile
 from .report_html import brl
+from .search import Query
 from .sources.live import chat_kind, coerce_chat, default_session_path, open_client, to_message
 from .textutil import normalize
 
@@ -44,7 +45,9 @@ PHONE_CONDITION = re.compile(
     r"|deslacrad[oa]s?|caixa aberta|recertificad[oa]s?|refurbished|sem lacre"
     r"|nao lacrad[oa]s?)\b"
 )
-PHONE_ACCESSORY = re.compile(r"\b(?:capinha|capa|case|pelicula|suporte)\s+(?:para|p/|de)\b")
+PHONE_ACCESSORY = re.compile(
+    r"\b(?:capinha|capa|case|pelicula|suporte|carregador|powerbank|cabo\s+usb)\b"
+)
 PHONE_RESTRICTION = re.compile(
     r"\b(?:cashback|trade[ -]?in|na troca|com troca|plano de operadora"
     r"|plano (?:vivo|claro|tim)|retirada obrigatoria)\b"
@@ -83,26 +86,30 @@ def classify_phone(
     *,
     allow_paid_shipping: bool = False,
     require_sealed: bool = True,
+    block_used: bool = True,
+    block_restrictions: bool = True,
 ) -> Classification:
     plain = normalize(text)
     models = {
         re.sub(r"[ \t-]+", "", number) + variant for number, variant in PHONE_MODEL.findall(plain)
     }
-    if len(models) != 1 or not models.intersection(PHONE_LABELS):
+    target_models = models.intersection(PHONE_LABELS)
+    has_other_17 = any(m.startswith("17") and m not in target_models for m in models)
+    if len(target_models) != 1 or has_other_17 or len(models) > 2:
         return Classification(None, "phone", (), "no_target_model")
     storage = {match.group() for match in PHONE_STORAGE.finditer(plain)}
     restocked = allow_paid_shipping and bool(RESTOCK.search(plain))
     if (
         {re.sub(r"\s+", "", size) for size in storage} != {"256gb"}
         or (require_sealed and not PHONE_SEALED.search(plain))
-        or PHONE_CONDITION.search(plain)
+        or (block_used and PHONE_CONDITION.search(plain))
         or PHONE_ACCESSORY.search(plain)
-        or PHONE_RESTRICTION.search(plain)
+        or (block_restrictions and PHONE_RESTRICTION.search(plain))
         or (not restocked and ENDED_OFFER.search(plain))
         or (not allow_paid_shipping and PAID_SHIPPING.search(plain))
     ):
         return Classification(None, "phone", (), "ineligible_phone_offer")
-    return Classification(models.pop(), "phone", (), "")
+    return Classification(target_models.pop(), "phone", (), "")
 
 
 PHONE_PROFILE = Profile("phone", tuple(PHONE_LABELS), PHONE_LABELS, (), classify_phone)
@@ -294,6 +301,49 @@ def promo_store(post: Post) -> str:
     return ""
 
 
+def profile_for_alert(alert: promo_menu.Alert) -> Profile:
+    cfg = alert.filter_config()
+    if cfg["mode"] == "broad":
+        return terms_profile(alert.label.split())
+    if alert.product in PROFILE.targets:
+        return PROFILE
+    if alert.product in PHONE_LABELS:
+        return Profile(
+            "phone",
+            tuple(PHONE_LABELS),
+            PHONE_LABELS,
+            (),
+            lambda text, c=cfg: classify_phone(
+                text,
+                allow_paid_shipping=True,
+                require_sealed=bool(c["require_sealed"]),
+                block_used=bool(c["block_used"]),
+                block_restrictions=bool(c["block_restrictions"]),
+            ),
+        )
+    return terms_profile(alert.label.split())
+
+
+def _extract_promo_payments(
+    post: Post, plausible: tuple[Decimal, Decimal] | None
+) -> list[PricePoint]:
+    _assign_method_prices(post, plausible)
+    payments = [point for method, point in post.method_prices.items() if method != "lowest_upfront"]
+    if not payments and post.method_notes.get("unspecified") == "conflicting_amounts":
+        # Common pattern: line 1 quotes the title with regular price ("R$ 1.989") and line 2
+        # quotes the deal price ("💵 R$ 1.751") without "De ... por ...". Keep the lower one.
+        lo, hi = plausible or (Decimal("0.01"), Decimal("1e12"))
+        unspec = [
+            p
+            for p in post.terms.points
+            if p.currency == "BRL" and p.method == "unspecified" and lo <= p.amount <= hi
+        ]
+        if len({p.line for p in unspec}) >= 2:
+            payments = [min(unspec, key=lambda p: p.amount)]
+    payments.sort(key=lambda point: (point.amount, point.method != "pix"))
+    return payments
+
+
 def promo_matches(
     message: Message,
     kind: str,
@@ -305,21 +355,23 @@ def promo_matches(
     if not restocked and ENDED_OFFER.search(plain):
         return
     for alert, profile in targets:
+        cfg = alert.filter_config()
+        if cfg["block_used"] and PHONE_CONDITION.search(plain):
+            continue
+        if cfg["include"] and not Query(terms=cfg["include"]).matches(message.text):
+            continue
+        if cfg["exclude"] and not Query(exclude=cfg["exclude"]).matches(message.text):
+            continue
         if not offer_filter(profile)(message, kind):
             continue
         post = build_post(message, profile)
         if not post.cls.usable or post.cls.model not in {alert.product, "query"}:
             continue
-        if profile is PROMO_PHONE_PROFILE and not post.url:
+        if cfg["require_url"] and not post.url:
             continue
-        _assign_method_prices(
-            post,
-            (Decimal("2500"), Decimal("15000")) if profile is PROMO_PHONE_PROFILE else None,
-        )
-        payments = [
-            point for method, point in post.method_prices.items() if method != "lowest_upfront"
-        ]
-        payments.sort(key=lambda point: (point.amount, point.method != "pix"))
+        is_phone = alert.product in PHONE_LABELS and cfg["mode"] == "smart"
+        plausible = (Decimal("2500"), Decimal("15000")) if is_phone else profile.plausible
+        payments = _extract_promo_payments(post, plausible)
         if not payments:
             continue
         best = payments[0]
@@ -369,13 +421,7 @@ async def scan(
     targets = []
     if promo:
         for alert in promo_menu.alerts(db, active_only=True):
-            if alert.product in PROFILE.targets:
-                profile = PROFILE
-            elif alert.product in PHONE_LABELS:
-                profile = PROMO_PHONE_PROFILE
-            else:
-                profile = terms_profile(alert.label.split())
-            targets.append((alert, profile))
+            targets.append((alert, profile_for_alert(alert)))
     with db:
         db.execute("DELETE FROM seen WHERE expires_at <= strftime('%s', 'now')")
     for chat in chats:
