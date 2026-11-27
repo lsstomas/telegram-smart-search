@@ -261,6 +261,8 @@ def build_parser() -> argparse.ArgumentParser:
     _add_session(watch)
     menu = sub.add_parser("promo-menu", help="serve the private PromoBot configuration menu")
     menu.add_argument("--state", type=Path, required=True, help="persistent SQLite database")
+    menu.add_argument("--sources", type=Path, help="file with monitored channel IDs")
+    _add_session(menu)
     return parser
 
 
@@ -471,7 +473,7 @@ def _cmd_promo_menu(args: argparse.Namespace) -> int:
         r"[1-9][0-9]*", chat_id
     ):
         raise LiveConfigError("Configure TGSEARCH_PROMOBOT_TOKEN e TGSEARCH_BOT_CHAT_ID.")
-    run_menu(args.state, Bot(token, int(chat_id)))
+    run_menu(args.state, Bot(token, int(chat_id)), sources_file=args.sources, session=args.session)
     return 0
 
 

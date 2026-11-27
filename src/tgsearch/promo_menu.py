@@ -115,7 +115,11 @@ def keyboard(*rows):
     }
 
 
-HOME = keyboard((("➕ Novo alerta", "new"),), (("📋 Meus alertas", "list"),))
+HOME = keyboard(
+    (("➕ Novo alerta", "new"),),
+    (("📋 Meus alertas", "list"),),
+    (("🔎 Buscar histórico", "hist"),),
+)
 BACK = keyboard((("Voltar", "home"),))
 
 
@@ -189,12 +193,99 @@ def details(bot: Bot, alert: Alert, message_id: int | None, status: str = "") ->
         message_id=message_id,
         reply_markup=keyboard(
             (("Mudar teto", f"cap:{alert.id}"), (action, f"toggle:{alert.id}:{1 - alert.paused}")),
-            (("⚙️ Filtros", f"filters:{alert.id}"), ("Voltar", "list")),
+            (("⚙️ Filtros", f"filters:{alert.id}"), ("🔎 Histórico", f"hist_pick:{alert.id}")),
+            (("Voltar", "list"),),
         ),
     )
 
 
-def handle(db: sqlite3.Connection, bot: Bot, update: dict) -> None:
+def _run_history_lookup(
+    db: sqlite3.Connection,
+    bot: Bot,
+    target: str,
+    hours: int,
+    message_id: int,
+    *,
+    state_path: Path | None,
+    sources_file: Path | None,
+    session: Path | None,
+) -> None:
+    from . import promo_history
+
+    if target == "all":
+        selected = alerts(db, active_only=True)
+        title = "Todos os alertas ativos"
+    else:
+        alert = next((a for a in alerts(db) if a.id == int(target)), None)
+        if alert is None:
+            bot.message("Alerta não encontrado.", message_id=message_id, reply_markup=HOME)
+            return
+        selected = [alert]
+        title = alert.label
+
+    if not selected:
+        bot.message(
+            "Nenhum alerta ativo para buscar.",
+            message_id=message_id,
+            reply_markup=HOME,
+        )
+        return
+
+    period_label = "últimas 24 horas" if hours <= 24 else f"últimos {hours // 24} dias"
+    bot.message(
+        (
+            f"🔎 Buscando promoções de {title} ({period_label}) nos seus canais...\n"
+            "Aguarde alguns segundos."
+        ),
+        message_id=message_id,
+    )
+    if state_path is None:
+        bot.message(
+            "Busca de histórico indisponível sem caminho de banco configurado.",
+            message_id=message_id,
+            reply_markup=HOME,
+        )
+        return
+    try:
+        entries = promo_history.search_history(
+            state_path,
+            selected,
+            hours,
+            sources_file=sources_file,
+            session=session,
+        )
+    except Exception as exc:
+        print(f"promo_history error: {exc}", file=sys.stderr, flush=True)
+        bot.message(
+            "Não consegui buscar no Telegram agora. Tente novamente em instantes.",
+            message_id=message_id,
+            reply_markup=keyboard((("Voltar ao menu", "home"),)),
+        )
+        return
+
+    chunks = promo_history.render_digest(title, period_label, entries)
+    nav = keyboard((("🔎 Nova busca", "hist"), ("Menu", "home")))
+    opts = {"parse_mode": "HTML", "link_preview_options": {"is_disabled": True}}
+    bot.message(
+        chunks[0],
+        message_id=message_id,
+        reply_markup=nav if len(chunks) == 1 else None,
+        **opts,
+    )
+    for idx, chunk in enumerate(chunks[1:], start=1):
+        is_last = idx == len(chunks) - 1
+        bot.message(chunk, reply_markup=nav if is_last else None, **opts)
+
+
+def handle(
+    db: sqlite3.Connection,
+    bot: Bot,
+    update: dict,
+    *,
+    state_path: Path | None = None,
+    sources_file: Path | None = None,
+    session: Path | None = None,
+) -> None:
     callback = update.get("callback_query")
     msg = callback.get("message", {}) if callback else update.get("message", {})
     if msg.get("chat", {}).get("id") != bot.chat_id or msg["chat"].get("type") != "private":
@@ -208,7 +299,15 @@ def handle(db: sqlite3.Connection, bot: Bot, update: dict) -> None:
         except BotError as error:
             if "query is too old" not in error.description.casefold():
                 raise
-        handle_action(db, bot, callback.get("data", ""), msg["message_id"])
+        handle_action(
+            db,
+            bot,
+            callback.get("data", ""),
+            msg["message_id"],
+            state_path=state_path,
+            sources_file=sources_file,
+            session=session,
+        )
         return
 
     text = msg.get("text", "").strip()
@@ -284,7 +383,16 @@ def handle(db: sqlite3.Connection, bot: Bot, update: dict) -> None:
         bot.message("⚡ PromoBot\n\nO que você quer fazer?", reply_markup=HOME)
 
 
-def handle_action(db: sqlite3.Connection, bot: Bot, action: str, message_id: int) -> None:
+def handle_action(
+    db: sqlite3.Connection,
+    bot: Bot,
+    action: str,
+    message_id: int,
+    *,
+    state_path: Path | None = None,
+    sources_file: Path | None = None,
+    session: Path | None = None,
+) -> None:
     if action == "home":
         put(db, "step", "")
         bot.message(
@@ -311,9 +419,63 @@ def handle_action(db: sqlite3.Connection, bot: Bot, action: str, message_id: int
         ]
         rows.append((("Voltar", "home"),))
         bot.message(
-            "📋 Meus alertas\n\nEscolha um produto para mudar o teto, pausar ou reativar:",
+            (
+                "📋 Meus alertas\n\n"
+                "Escolha um produto para editar teto, pausar, filtrar ou ver histórico:"
+            ),
             message_id=message_id,
             reply_markup=keyboard(*rows),
+        )
+    elif action == "hist":
+        put(db, "step", "")
+        items = alerts(db)
+        if not items:
+            bot.message(
+                "🔎 Buscar histórico\n\nCrie um alerta primeiro para buscar o histórico dele.",
+                message_id=message_id,
+                reply_markup=keyboard((("➕ Novo alerta", "new"),), (("Voltar", "home"),)),
+            )
+            return
+        rows = [((f"🔎 {a.label}", f"hist_pick:{a.id}"),) for a in items]
+        rows.append((("📦 Todos os alertas ativos", "hist_pick:all"),))
+        rows.append((("Voltar", "home"),))
+        bot.message(
+            "🔎 Buscar histórico\n\nQual produto você quer verificar nos seus canais?",
+            message_id=message_id,
+            reply_markup=keyboard(*rows),
+        )
+    elif match := re.fullmatch(r"hist_pick:(all|\d+)", action):
+        put(db, "step", "")
+        target = match.group(1)
+        if target == "all":
+            label = "Todos os alertas ativos"
+            back_action = "hist"
+        else:
+            alert = next((a for a in alerts(db) if a.id == int(target)), None)
+            if alert is None:
+                return
+            label = alert.label
+            back_action = f"view:{alert.id}"
+        bot.message(
+            f"🔎 Histórico · {label}\n\nQual período você quer buscar?",
+            message_id=message_id,
+            reply_markup=keyboard(
+                (("🕒 Últimas 24 horas", f"hist_run:{target}:24"),),
+                (("📅 Últimos 7 dias", f"hist_run:{target}:168"),),
+                (("Voltar", back_action),),
+            ),
+        )
+    elif match := re.fullmatch(r"hist_run:(all|\d+):(24|168)", action):
+        put(db, "step", "")
+        _run_history_lookup(
+            db,
+            bot,
+            match.group(1),
+            int(match.group(2)),
+            message_id,
+            state_path=state_path,
+            sources_file=sources_file,
+            session=session,
         )
     elif action == "confirm" and get(db, "step") == "confirm":
         label = get(db, "label")
@@ -383,7 +545,13 @@ def handle_action(db: sqlite3.Connection, bot: Bot, action: str, message_id: int
         details(bot, alert, message_id, status)
 
 
-def run(state: Path, bot: Bot) -> None:
+def run(
+    state: Path,
+    bot: Bot,
+    *,
+    sources_file: Path | None = None,
+    session: Path | None = None,
+) -> None:
     state.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     registered = False
     with closing(sqlite3.connect(state, timeout=30)) as db:
@@ -409,7 +577,14 @@ def run(state: Path, bot: Bot) -> None:
                 for update in updates:
                     with db:
                         try:
-                            handle(db, bot, update)
+                            handle(
+                                db,
+                                bot,
+                                update,
+                                state_path=state,
+                                sources_file=sources_file,
+                                session=session,
+                            )
                         except BotError as error:
                             if "message is not modified" not in error.description.casefold():
                                 raise
@@ -425,12 +600,14 @@ def run(state: Path, bot: Bot) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--state", type=Path, required=True)
+    parser.add_argument("--sources", type=Path, default=None)
+    parser.add_argument("--session", type=Path, default=None)
     args = parser.parse_args()
     token = os.getenv("TGSEARCH_PROMOBOT_TOKEN", "")
     chat_id = os.getenv("TGSEARCH_BOT_CHAT_ID", "")
     if not re.fullmatch(r"[0-9]+:[A-Za-z0-9_-]+", token) or not re.fullmatch(r"[1-9]\d*", chat_id):
         parser.error("Configure TGSEARCH_PROMOBOT_TOKEN e TGSEARCH_BOT_CHAT_ID.")
-    run(args.state, Bot(token, int(chat_id)))
+    run(args.state, Bot(token, int(chat_id)), sources_file=args.sources, session=args.session)
 
 
 if __name__ == "__main__":

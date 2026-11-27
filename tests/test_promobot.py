@@ -2,9 +2,10 @@ import sqlite3
 import tempfile
 import unittest
 from dataclasses import replace
+from datetime import datetime, timezone
 from pathlib import Path
 
-from tgsearch import promo_delivery, promo_menu, watch
+from tgsearch import promo_delivery, promo_history, promo_menu, watch
 from tgsearch.models import Message
 
 
@@ -351,6 +352,61 @@ class PromoBotTests(unittest.TestCase):
         p17e_rst = next(a for a in promo_menu.alerts(self.db) if a.id == p17e.id)
         self.assertEqual(p17e_rst.filter_config()["exclude"], [])
         self.assertTrue(p17e_rst.filter_config()["block_restrictions"])
+
+    def test_history_digest_groups_reposts_and_separates_ceiling(self):
+        t1 = datetime(2026, 11, 27, 10, 26, tzinfo=timezone.utc)
+        t2 = datetime(2026, 11, 27, 10, 29, tzinfo=timezone.utc)
+        e1 = promo_history.HistoryEntry(
+            offer=replace(
+                self.offer,
+                key='["17", "mercadolivre", ["MADRUXPTMANA"]]',
+                title="iPhone 17 256 GB",
+                store="mercadolivre",
+                price=439900,
+                coupons=["MADRUXPTMANA"],
+                posts={"https://t.me/a/1": "Canal A"},
+            ),
+            seen_at=t1,
+            within_ceiling=True,
+            alert_ceiling=495000,
+        )
+        e2 = promo_history.HistoryEntry(
+            offer=replace(e1.offer, posts={"https://t.me/b/2": "Canal B"}),
+            seen_at=t2,
+            within_ceiling=True,
+            alert_ceiling=495000,
+        )
+        e_above = promo_history.HistoryEntry(
+            offer=replace(
+                e1.offer,
+                key='["17", "amazon", []]',
+                store="amazon",
+                price=503000,
+                coupons=[],
+                posts={"https://t.me/c/3": "Canal C"},
+            ),
+            seen_at=t2,
+            within_ceiling=False,
+            alert_ceiling=495000,
+        )
+        chunks = promo_history.render_digest(
+            "iPhone 17 256 GB", "últimas 24 horas", [e1, e2, e_above]
+        )
+        self.assertEqual(len(chunks), 1)
+        body = chunks[0]
+        self.assertIn("Dentro do teto (1)", body)
+        self.assertIn("Canal A", body)
+        self.assertIn("Canal B", body)
+        self.assertIn("R$ 4.399,00", body)
+        self.assertIn("Menores preços acima do teto", body)
+        self.assertIn("R$ 5.030,00", body)
+
+        # Menu flow: hist -> hist_pick -> period options
+        promo_menu.handle_action(self.db, self.bot, "hist", 20)
+        self.assertIn("Buscar histórico", self.bot.messages[-1][0])
+        alert = promo_menu.alerts(self.db)[-1]
+        promo_menu.handle_action(self.db, self.bot, f"hist_pick:{alert.id}", 20)
+        self.assertIn("Qual período", self.bot.messages[-1][0])
 
 
 if __name__ == "__main__":
