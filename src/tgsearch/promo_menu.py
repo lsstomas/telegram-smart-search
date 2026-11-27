@@ -210,7 +210,7 @@ def filter_menu(bot: Bot, alert: Alert, message_id: int | None, status: str = ""
     if status:
         text = f"✅ <b>{escape(status)}</b>\n\n{text}"
     rows = []
-    if alert.product in {"rx7600", "rx7600xt", "17", "17e"}:
+    if alert.product in {"rx7600", "rx7600xt", "17", "17e", "ddr5_16gb"}:
         next_mode = "broad" if cfg["mode"] == "smart" else "smart"
         mode_btn = "⚙️ Modo: Inteligente ⇄" if cfg["mode"] == "smart" else "⚙️ Modo: Amplo ⇄"
         rows.append(((mode_btn, f"flt:{alert.id}:mode:{next_mode}"),))

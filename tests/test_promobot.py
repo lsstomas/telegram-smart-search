@@ -566,6 +566,40 @@ class PromoBotTests(unittest.TestCase):
                 promo_jobs.clear_heartbeat(db)
                 self.assertFalse(promo_jobs.is_live_watcher_active(db))
 
+    def test_ram_ddr5_16gb_single_stick_desktop_profile(self):
+        ram_alert = promo_menu.Alert(
+            99, "ddr5_16gb", "Memória RAM 16GB DDR5 (1x16GB)", 200000, 0, '{"min_price": 40000}'
+        )
+        target = [(ram_alert, watch.profile_for_alert(ram_alert))]
+
+        # Should MATCH: without "RAM" word, with "Kit de Memória (1x16GB)", with "16 GB" spaced
+        valid_posts = [
+            "🔥 Corsair Vengeance 16GB (1x16GB) DDR5 5200MHz Kit de Memória Preto\n"
+            "💰 R$ 1707\nhttps://link.amazon/B0fIyLoGq",
+            "💎 Memória XPG Lancer Blade 16GB 6000MHz DDR5 RGB White\n"
+            "💰 R$ 1.989,90\nhttps://aoferta.net/001TkWzj-Terabyte",
+            "Memória Ram Adata Lancer Blade Ddr5, 6000 Mhz, 16 Gb Branca\n"
+            "💵 R$ 1789\n🎟 Cupom: OFERTAPRATECH\nhttps://meli.la/2uw9AAe",
+        ]
+        for idx, text in enumerate(valid_posts, start=1):
+            msg = Message("Canal", idx, None, text, link=f"https://t.me/c/{idx}")
+            offers = list(watch.promo_matches(msg, "channel", target))
+            self.assertEqual(len(offers), 1, f"Expected match for post {idx}: {text}")
+
+        # Should REJECT: SODIMM, 2x8GB, 2x16GB/32GB, DDR4 ou DDR5, notebook, PC gamer
+        rejected_posts = [
+            "Memoria Ram DDR5 16GB 5600MHz 1RX16 SODIMM\nR$ 1.288\nhttps://s.shopee.com.br/1",
+            "Memória DDR5 16GB (2x8GB) 6000MHz\nR$ 1.499\nhttps://www.kabum.com.br/1",
+            "Memória DDR5 32GB (2x16GB) 6000MHz\nR$ 1.899\nhttps://www.kabum.com.br/2",
+            "RAM cusu para desktop em DDR4 ou DDR5, de 8GB a 16GB\nR$ 500\nhttps://a.ali.com/1",
+            "Notebook Gamer 16GB DDR5 RTX 4050\nR$ 1.999\nhttps://meli.la/nb",
+            "Kit Upgrade Ryzen + Placa Mãe + 16GB DDR5\nR$ 1.999\nhttps://www.terabyteshop.com.br/1",
+        ]
+        for idx, text in enumerate(rejected_posts, start=10):
+            msg = Message("Canal", idx, None, text, link=f"https://t.me/c/{idx}")
+            offers = list(watch.promo_matches(msg, "channel", target))
+            self.assertEqual(offers, [], f"Expected reject for post {idx}: {text}")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -117,6 +117,51 @@ def classify_phone(
     return Classification(target_models.pop(), "phone", (), "")
 
 
+RAM_LABELS = {"ddr5_16gb": "Memória RAM 16GB DDR5 (1x16GB)"}
+RAM_DDR5 = re.compile(r"\bddr[ \t-]*5\b")
+RAM_DDR4 = re.compile(r"\bddr[ \t-]*4\b")
+RAM_16GB = re.compile(r"\b16\s*gb\b")
+RAM_WRONG_CAP = re.compile(
+    r"\b(?:2\s*[x×]\s*8(?:\s*gb)?|8\s*gb\s*[x×]\s*2"
+    r"|2\s*[x×]\s*16(?:\s*gb)?|16\s*gb\s*[x×]\s*2"
+    r"|(?:32|48|64|96|128)\s*gb"
+    r"|(?:de\s+)?8\s*gb\s+(?:a|ou|e)\s+16\s*gb)\b"
+)
+RAM_LAPTOP = re.compile(r"\b(?:so[ \t-]?dimm|notebook|laptop|macbook|mini[ \t-]?pc)\b")
+RAM_NOT_STICK = re.compile(
+    r"\b(?:placa\s+de\s+video|geforce|radeon|rtx\s*\d|rx\s*\d{3,4}"
+    r"|pc\s+gamer|pc\s+completo|computador\s+completo|kit\s+upgrade"
+    r"|placa[ \t-]?mae|motherboard|smartphone|celular|tablet"
+    r"|rog\s+ally|steam\s+deck|console|servidor|rdimm|ecc\s+reg)\b"
+)
+RAM_CONTEXT = re.compile(
+    r"\b(?:memoria|ram|u?dimm|dram|vengeance|fury|lancer|dominator|trident"
+    r"|ripjaws|ballistix|crucial|xpg|kingston|corsair|adata|g\.?skill"
+    r"|team\s*group|patriot|lexar|apacer|zadak|hiksemi|juhor|asgard|netac)\b"
+)
+
+
+def classify_ram_ddr5_16gb(
+    text: str,
+    *,
+    block_used: bool = True,
+) -> Classification:
+    plain = normalize(text)
+    if not RAM_DDR5.search(plain) or not RAM_16GB.search(plain) or not RAM_CONTEXT.search(plain):
+        return Classification(None, "ram", (), "no_target_model")
+    restocked = bool(RESTOCK.search(plain))
+    if (
+        RAM_DDR4.search(plain)
+        or RAM_WRONG_CAP.search(plain)
+        or RAM_LAPTOP.search(plain)
+        or RAM_NOT_STICK.search(plain)
+        or (block_used and PHONE_CONDITION.search(plain))
+        or (not restocked and ENDED_OFFER.search(plain))
+    ):
+        return Classification(None, "ram", (), "ineligible_ram_offer")
+    return Classification("ddr5_16gb", "ram", (), "")
+
+
 PHONE_PROFILE = Profile("phone", tuple(PHONE_LABELS), PHONE_LABELS, (), classify_phone)
 PROMO_PHONE_PROFILE = Profile(
     "phone",
@@ -297,7 +342,13 @@ def promo_store(post: Post) -> str:
         ):
             if path.startswith(prefix):
                 return name
-        for suffix, name in (("-amazon", "amazon"), ("-mercadolivre", "mercadolivre")):
+        for suffix, name in (
+            ("-amazon", "amazon"),
+            ("-mercadolivre", "mercadolivre"),
+            ("-terabyte", "terabyte"),
+            ("-kabum", "kabum"),
+            ("-pichau", "pichau"),
+        ):
             if path.endswith(suffix):
                 return name
         if post.store:
@@ -325,6 +376,18 @@ def profile_for_alert(alert: promo_menu.Alert) -> Profile:
                 block_used=bool(c["block_used"]),
                 block_restrictions=bool(c["block_restrictions"]),
             ),
+        )
+    if alert.product in RAM_LABELS:
+        return Profile(
+            "ram",
+            tuple(RAM_LABELS),
+            RAM_LABELS,
+            (),
+            lambda text, c=cfg: classify_ram_ddr5_16gb(
+                text,
+                block_used=bool(c["block_used"]),
+            ),
+            (Decimal("250"), Decimal("5000")),
         )
     return terms_profile(alert.label.split())
 

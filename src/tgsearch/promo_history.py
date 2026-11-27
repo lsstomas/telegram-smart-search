@@ -107,6 +107,8 @@ def search_queries(alert: promo_menu.Alert) -> tuple[str, ...]:
         return ("iphone 17e",)
     if alert.product == "17":
         return ("iphone 17",)
+    if alert.product == "ddr5_16gb":
+        return ("ddr5 16gb", "16gb ddr5", "ddr5 16 gb", "memoria ddr5")
     return (alert.label,)
 
 
