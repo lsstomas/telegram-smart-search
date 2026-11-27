@@ -117,6 +117,7 @@ class Offer:
     payment_method: str = ""
     installments: str = ""
     other_payments: list[str] = field(default_factory=list)
+    item_name: str = ""
 
 
 def cents(amount: Decimal) -> int:
@@ -168,7 +169,10 @@ def render(offer: Offer, previous: int | None) -> str:
     else:
         header = f"⚡ <b>{escape(offer.title)}</b>"
 
-    sections: list[list[str]] = [[header]]
+    head_lines = [header]
+    if offer.item_name and offer.item_name.casefold() != offer.title.casefold():
+        head_lines.append(f"📦 {escape(offer.item_name[:110])}")
+    sections: list[list[str]] = [head_lines]
 
     store_lines: list[str] = []
     if offer.store:
@@ -288,6 +292,8 @@ def deliver_offer(db: sqlite3.Connection, bot: Bot, offer: Offer, now: int) -> N
     current.buy_url = current.buy_url or offer.buy_url
     current.store = current.store or offer.store
     current.seller = current.seller or offer.seller
+    if len(offer.item_name) > len(current.item_name):
+        current.item_name = offer.item_name
     if offer.shipping is not None:
         current.shipping = offer.shipping
     current.payment_method = current.payment_method or offer.payment_method

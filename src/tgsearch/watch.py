@@ -10,6 +10,7 @@ import signal
 import sqlite3
 import sys
 import time
+import unicodedata
 from collections.abc import Iterable, Iterator, Sequence
 from contextlib import closing, contextmanager
 from dataclasses import asdict, dataclass
@@ -412,6 +413,82 @@ def _extract_promo_payments(
     return payments
 
 
+_HYPE_LINE = re.compile(
+    r"\b(?:corree+|precao|precinh|urgente|imperdivel|so\s+hoje|comecou\s+a"
+    r"|liberou+|vai\s+aumentar|vem\s+aqui|e\s+pra\s+compr|queima\s+de\s+estoque"
+    r"|oferta\s+relampago|oportunidade|campeao\s+de\s+vendas|condicao\s+especial"
+    r"|menor\s+preco|descontao|esquenta|black\s+friday|tem\s+que\s+ta)\b"
+)
+_SKIP_LINE = re.compile(
+    r"^(?:https?://|compre\s+aqui|link|cupo[mn]s?|use\s+o|usem\s+o|resgate|frete"
+    r"|vendido\s+por|vendedor|grupos?\s+de|entre\s+nos|convide|anuncio|oferta\s+por"
+    r"|promocao\s+sujeita|alerta\s+de\s+promo|bot\s+de\s+alertas|clique\s+aqui"
+    r"|selecione|vai\s+abrir|apenas\s+no\s+app|de\s+r\$|por\s*:?\s*r\$|r\$|\d+\s*[x×]\s+de)"
+)
+_TRAILING_STORE = re.compile(
+    r"\s*[|–—-]\s*(?:mercado\s+livre|amazon|kabum|terabyte|pichau|magalu|shopee|aliexpress)\s*$",
+    re.IGNORECASE,
+)
+_INLINE_PRICE_TAIL = re.compile(
+    r"\s+(?:por|de|a\s+partir\s+de|com\s+cupom)?\s*:?\s*r\$.*$",
+    re.IGNORECASE,
+)
+
+
+def _strip_line_decor(line: str) -> str:
+    cleaned = "".join(
+        c
+        for c in line
+        if unicodedata.category(c) not in {"So", "Cf"} and c not in {"\ufe0f", "\u200d"}
+    )
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" *~_•·-:|/>[]")
+    cleaned = _INLINE_PRICE_TAIL.sub("", cleaned).strip(" ,.-|")
+    cleaned = _TRAILING_STORE.sub("", cleaned).strip(" ,.-|")
+    return cleaned
+
+
+def extract_item_name(text: str, alert_label: str) -> str:
+    """Extract the cleanest product model/brand/specs line from a deal post."""
+    label_tokens = {tok for tok in normalize(alert_label).split() if len(tok) >= 2}
+    best_line = ""
+    best_score = -999
+
+    for idx, raw in enumerate(text.splitlines()[:8]):
+        line = _strip_line_decor(raw)
+        if len(line) < 8:
+            continue
+        norm = normalize(line)
+        if not re.search(r"[a-z]{3,}", norm) or _SKIP_LINE.search(norm):
+            continue
+        if "http://" in norm or "https://" in norm or "t.me/" in norm:
+            continue
+
+        score = 0
+        overlap = sum(1 for tok in label_tokens if tok in norm)
+        score += overlap * 3
+        if 14 <= len(line) <= 105:
+            score += 2
+        if line != line.upper():
+            score += 2
+        else:
+            score -= 2
+        if _HYPE_LINE.search(norm):
+            score -= 5
+        if idx <= 2:
+            score += 1
+
+        if score > best_score:
+            best_score = score
+            best_line = line
+
+    if best_score < 1 or not best_line:
+        return ""
+    if len(best_line) > 95:
+        cut = best_line[:94].rsplit(" ", 1)[0]
+        best_line = (cut or best_line[:94]).rstrip(" ,.-|") + "…"
+    return best_line
+
+
 def promo_matches(
     message: Message,
     kind: str,
@@ -477,6 +554,7 @@ def promo_matches(
             payment_method,
             installments,
             other_payments,
+            extract_item_name(message.text, alert.label),
         )
 
 

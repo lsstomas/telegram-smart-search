@@ -149,6 +149,7 @@ def group_history_entries(entries: Sequence[HistoryEntry]) -> list[HistoryEntry]
                     payment_method=entry.offer.payment_method,
                     installments=entry.offer.installments,
                     other_payments=list(entry.offer.other_payments),
+                    item_name=entry.offer.item_name,
                 ),
                 seen_at=entry.seen_at,
                 within_ceiling=entry.within_ceiling,
@@ -159,6 +160,8 @@ def group_history_entries(entries: Sequence[HistoryEntry]) -> list[HistoryEntry]
         existing.offer.buy_url = existing.offer.buy_url or entry.offer.buy_url
         existing.offer.seller = existing.offer.seller or entry.offer.seller
         existing.offer.installments = existing.offer.installments or entry.offer.installments
+        if len(entry.offer.item_name) > len(existing.offer.item_name):
+            existing.offer.item_name = entry.offer.item_name
         if not existing.offer.payment_method or existing.offer.payment_method == "Não informada":
             existing.offer.payment_method = entry.offer.payment_method
         if existing.offer.shipping is None and entry.offer.shipping is not None:
@@ -189,6 +192,8 @@ def format_offer_card(entry: HistoryEntry, *, best: bool, show_title: bool) -> s
         )
     else:
         head = f"{badge}<b>{promo_delivery.money(offer.price)}</b> — {escape(store)}"
+    if offer.item_name and offer.item_name.casefold() != offer.title.casefold():
+        head += f"\n📦 {escape(offer.item_name[:100])}"
 
     details: list[str] = []
     if offer.payment_method and offer.payment_method != "Não informada":

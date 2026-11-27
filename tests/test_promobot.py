@@ -600,6 +600,35 @@ class PromoBotTests(unittest.TestCase):
             offers = list(watch.promo_matches(msg, "channel", target))
             self.assertEqual(offers, [], f"Expected reject for post {idx}: {text}")
 
+    def test_extract_item_name_skips_hype_and_shows_in_cards(self):
+        ram_alert = promo_menu.Alert(
+            99, "ddr5_16gb", "Memória RAM 16GB DDR5 (1x16GB)", 200000, 0, '{"min_price": 40000}'
+        )
+        msg = Message(
+            "Canal",
+            1,
+            None,
+            "É PRA COMPRAAAAAAA AGORAAAAAAA!\n\n"
+            "💎 Memória XPG Lancer Blade 16GB 6000MHz DDR5 RGB White | Terabyte\n\n"
+            "💰 R$ 1.799,90 no Pix\n"
+            "https://www.terabyteshop.com.br/produto/33578",
+            link="https://t.me/canal/1",
+        )
+        (offer,) = watch.promo_matches(
+            msg, "channel", [(ram_alert, watch.profile_for_alert(ram_alert))]
+        )
+        self.assertEqual(offer.item_name, "Memória XPG Lancer Blade 16GB 6000MHz DDR5 RGB White")
+        live_html = promo_delivery.render(offer, None)
+        self.assertIn("📦 Memória XPG Lancer Blade 16GB 6000MHz DDR5 RGB White", live_html)
+        entry = promo_history.HistoryEntry(
+            offer=offer,
+            seen_at=datetime(2026, 11, 27, 14, 0, tzinfo=timezone.utc),
+            within_ceiling=True,
+            alert_ceiling=200000,
+        )
+        card = promo_history.format_offer_card(entry, best=True, show_title=False)
+        self.assertIn("📦 Memória XPG Lancer Blade 16GB 6000MHz DDR5 RGB White", card)
+
 
 if __name__ == "__main__":
     unittest.main()
