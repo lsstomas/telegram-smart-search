@@ -135,6 +135,65 @@ calendar days (America/Sao_Paulo):
 
 Deal channels post when a price looks good, so a quiet day means no post, not a high price.
 
+### Scheduled Telegram alerts (PromoBot)
+
+The `watch` and `promo-menu` commands turn any VPS or always-on machine into a personal
+Telegram deal monitor. Anyone can deploy their own instance using their own Telegram
+account (read-only via Telethon) and their own bot created with `@BotFather`:
+
+- **Private configuration menu (`tgsearch promo-menu`)**: manage alerts directly inside
+  your private chat with the bot (**Novo alerta** and **Meus alertas** — set product
+  name and price ceiling, edit ceilings, pause or reactivate). Changes are stored in the
+  shared SQLite database and persist across restarts.
+- **Periodic offer polling (`tgsearch watch`)**: polls only the groups and channels
+  passed via `--chat`. On the first run it records the latest message ID per chat and
+  tracks new posts from that point forward.
+- **Smart deduplication & editable notifications**:
+  - One formatted message per offer (product, store, optional seller, price, payment
+    method, installments/interest when stated, coupon, confirmed shipping, **Abrir
+    oferta** button, and source post links).
+  - Same product, store, price, and coupon within **1 hour** edits the original message
+    to append the new source post link (restarting the 1-hour sliding window).
+  - Reprocessing an already-seen post never triggers a duplicate alert.
+  - Different store, different coupon, confirmed shipping change, confirmed restock, or a
+    price drop of at least **R$ 10** sends a new alert.
+
+#### Quick setup
+
+1. Install with `pip install -e '.[live]'`. Run `tgsearch auth` interactively to save your
+   Telegram API credentials and session, then list your channels/groups with
+   `tgsearch chats --include-groups`. Use `@username` when available, or
+   `-(1000000000000 + ID)` for a channel/supergroup (`-ID` for a basic group).
+2. Create a bot with `@BotFather`, open its private chat, and tap **Start** (`/start`).
+   Find your numeric private `chat_id` via `getUpdates` (or your own Telethon user ID)
+   and save the credentials in a private `0600` environment file outside the repository:
+
+   ```sh
+   TGSEARCH_PROMOBOT_TOKEN=123456:your-bot-token
+   TGSEARCH_BOT_CHAT_ID=123456789
+   ```
+
+   *(If you only set `TGSEARCH_BOT_TOKEN` instead of `TGSEARCH_PROMOBOT_TOKEN`, `watch`
+   runs in legacy digest mode.)*
+
+3. Start the interactive menu daemon (e.g. as a `systemd --user` service):
+
+   ```sh
+   tgsearch promo-menu --state ~/.local/share/tgsearch-watch/watch.sqlite3
+   ```
+
+4. Schedule `tgsearch watch` every 2 minutes (via `systemd --user` timer or cron),
+   passing the same `--state` SQLite file and your `--chat` sources:
+
+   ```sh
+   tgsearch watch \
+       --chat @example_deal_channel --chat=-1001234567890 \
+       --state ~/.local/share/tgsearch-watch/watch.sqlite3
+   ```
+
+   Set `TGSEARCH_SESSION` if you want a dedicated Telethon session file. In the bot's
+   private chat, send `/menu` to add your first alert.
+
 ### GPU profile (RX 7600 and RTX 5050)
 
 ```bash
@@ -278,7 +337,7 @@ Layout:
 
 ```
 src/tgsearch/
-  cli.py          entry point: export, live, auth, chats, fetch, scan, report, gpu-fetch, gpu-report
+  cli.py          entry point: export, live, auth, chats, fetch, scan, report, watch, promo-menu
   extract.py      price / installment / payment / coupon extraction
   dedupe.py       conservative merging
   search.py       query matching, filters, pipeline
@@ -292,6 +351,9 @@ src/tgsearch/
   analysis.py     studies: duplicates, probable reposts, statistics, best deals, report files
   trends.py       daily lows, weekdays, time of month, promotion dates, thresholds
   report_html.py  self-contained HTML report (inline SVG, no scripts)
+  watch.py        periodic channel monitor and offer matcher
+  promo_delivery.py  editable PromoBot alerts, 1h sliding dedup and outbox
+  promo_menu.py   private Telegram inline menu for managing alerts
   sources/export.py  Telegram Desktop JSON reader
   sources/live.py    Telethon reader: dialogs, global search, per-chat search
 tests/            pytest suite and JSON fixtures

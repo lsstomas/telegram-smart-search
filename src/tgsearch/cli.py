@@ -253,6 +253,14 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--since", type=_date, help="window start (overrides --days)")
         p.add_argument("--until", type=_date, help="window end, inclusive (default now)")
         p.add_argument("--out", type=Path, help="report directory")
+    watch = sub.add_parser("watch", help="check selected chats once and send a private GPU digest")
+    watch.add_argument(
+        "--chat", action="append", required=True, help="group or channel, repeatable"
+    )
+    watch.add_argument("--state", type=Path, required=True, help="persistent SQLite database")
+    _add_session(watch)
+    menu = sub.add_parser("promo-menu", help="serve the private PromoBot configuration menu")
+    menu.add_argument("--state", type=Path, required=True, help="persistent SQLite database")
     return parser
 
 
@@ -440,12 +448,41 @@ def _cmd_report(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_watch(args: argparse.Namespace) -> int:
+    from asyncio import run
+
+    from .watch import run as watch
+
+    run(watch(args.chat, args.state, args.session))
+    return 0
+
+
+def _cmd_promo_menu(args: argparse.Namespace) -> int:
+    import os
+    import re
+
+    from .credentials import LiveConfigError
+    from .promo_delivery import Bot
+    from .promo_menu import run as run_menu
+
+    token = os.getenv("TGSEARCH_PROMOBOT_TOKEN", "")
+    chat_id = os.getenv("TGSEARCH_BOT_CHAT_ID", "")
+    if not re.fullmatch(r"[0-9]+:[A-Za-z0-9_-]+", token) or not re.fullmatch(
+        r"[1-9][0-9]*", chat_id
+    ):
+        raise LiveConfigError("Configure TGSEARCH_PROMOBOT_TOKEN e TGSEARCH_BOT_CHAT_ID.")
+    run_menu(args.state, Bot(token, int(chat_id)))
+    return 0
+
+
 _LIVE_COMMANDS = {
     "auth": _cmd_auth,
     "chats": _cmd_chats,
     "fetch": _cmd_fetch,
     "scan": _cmd_scan,
     "gpu-fetch": _cmd_scan,
+    "watch": _cmd_watch,
+    "promo-menu": _cmd_promo_menu,
 }
 
 

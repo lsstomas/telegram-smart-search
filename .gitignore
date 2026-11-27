@@ -22,3 +22,5 @@ result.json
 *.csv
 out/
 *.jsonl
+*.sqlite3*
+*.lock
