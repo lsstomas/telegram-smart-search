@@ -1,9 +1,11 @@
+import os
 import sqlite3
 import tempfile
 import unittest
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest import mock
 
 from tgsearch import promo_delivery, promo_history, promo_menu, watch
 from tgsearch.models import Message
@@ -27,6 +29,9 @@ class FakeBot:
 
 class PromoBotTests(unittest.TestCase):
     def setUp(self):
+        self._ai_patch = mock.patch.dict(os.environ, {"TGSEARCH_DISABLE_AI": "1"})
+        self._ai_patch.start()
+        self.addCleanup(self._ai_patch.stop)
         self.db = sqlite3.connect(":memory:")
         self.addCleanup(self.db.close)
         self.db.executescript(promo_delivery.SCHEMA)
@@ -395,21 +400,27 @@ class PromoBotTests(unittest.TestCase):
             within_ceiling=False,
             alert_ceiling=495000,
         )
-        chunks = promo_history.render_digest(
+        chunks, above = promo_history.render_digest(
             "iPhone 17 256 GB",
             "últimas 24 horas",
             [e1, e2, e_above, e_above2],
             ceiling=495000,
         )
         self.assertEqual(len(chunks), 1)
+        self.assertEqual(len(above), 1)
         body = chunks[0]
-        self.assertIn("DENTRO DO TETO (1)", body)
+        self.assertIn("DENTRO DO TETO</b> · 1 oferta", body)
         self.assertIn("<blockquote>🏆 <b>R$ 4.399,00</b>", body)
         self.assertIn("Posts (2):", body)
         self.assertIn("Canal A", body)
         self.assertIn("Canal B", body)
-        self.assertIn("ACIMA DO TETO · 1 menores (de 1)", body)
-        self.assertIn("<blockquote expandable>", body)
+        self.assertIn("ACIMA DO TETO</b> · 1 oferta (menor: <b>R$ 5.030,00</b>)", body)
+        above_chunks, rem = promo_history.render_above_page(
+            "iPhone 17 256 GB", "últimas 24 horas", above, offset=0, ceiling=495000
+        )
+        self.assertEqual(rem, 0)
+        self.assertIn("OFERTAS ACIMA DO TETO", above_chunks[0])
+        self.assertIn("R$ 5.030,00", above_chunks[0])
 
         # Menu flow: hist_new & home_new always send NEW messages (message_id=None)
         promo_menu.handle_action(self.db, self.bot, "hist_new", 20)
@@ -425,9 +436,79 @@ class PromoBotTests(unittest.TestCase):
                 promo_history.ChannelEntry("-1002", "Canal Privado", "", "channel"),
             ]
         )
-        self.assertIn("Canais monitorados (2)", ch_chunks[0])
+        self.assertIn("CANAIS MONITORADOS (2)", ch_chunks[0])
         self.assertIn("@showofertas2", ch_chunks[0])
         self.assertIn("(privado)", ch_chunks[0])
+
+    def test_coupon_stopwords_ml_store_and_ai_alert_creation(self):
+        from tgsearch import promo_ai
+
+        # 1. "BLACK150 ou resgate no anúncio" must NOT extract RESGATE or APPLE as coupons
+        p17e = next(a for a in promo_menu.alerts(self.db) if a.product == "17e")
+        p_res = Message(
+            "Canal",
+            50,
+            None,
+            "Apple iPhone 17e 256GB\nR$ 3.600,00 no Pix com cupom: BLACK150 ou resgate no anúncio\n"
+            "https://link.amazon/B0123",
+            link="https://t.me/c/50",
+        )
+        (o_res,) = watch.promo_matches(p_res, "channel", [(p17e, watch.profile_for_alert(p17e))])
+        self.assertEqual(o_res.coupons, ["BLACK150"])
+
+        # 2. "Loja Oficial Magalu no ML" with /ml/ URL must map to Mercado Livre, not Magalu
+        p_ml = Message(
+            "Crowman",
+            51,
+            None,
+            "Apple iPhone 17e 256GB\nR$ 3.600 no Pix\nUse o Cupom: CONECTAML + ELETRO300\n"
+            "Loja Oficial Magalu no ML\nhttps://ofertas.ctlinks.com.br/ml/Yrnzcnw",
+            link="https://t.me/c/51",
+        )
+        (o_ml,) = watch.promo_matches(p_ml, "channel", [(p17e, watch.profile_for_alert(p17e))])
+        self.assertEqual(o_ml.store, "mercadolivre")
+
+        # 3. AI-suggested alert creation: choice between AI filters and pure text
+        fake_sugg = promo_ai.FilterSuggestion(
+            exclude=["cooler", "kit upgrade", "pc gamer"],
+            min_price=60000,
+            tip="Evita coolers baratos e PCs montados.",
+        )
+        with mock.patch.object(promo_ai, "suggest_filters", return_value=fake_sugg):
+            promo_menu.handle_action(self.db, self.bot, "new", 60)
+            promo_menu.handle(
+                self.db,
+                self.bot,
+                {"message": {"chat": {"type": "private", "id": 123}, "text": "Ryzen 7 5800X3D"}},
+            )
+            promo_menu.handle(
+                self.db,
+                self.bot,
+                {"message": {"chat": {"type": "private", "id": 123}, "text": "1800"}},
+            )
+            self.assertIn("Filtros sugeridos (IA)", self.bot.messages[-1][0])
+            promo_menu.handle_action(self.db, self.bot, "confirm_ai", 61)
+            created = next(a for a in promo_menu.alerts(self.db) if a.label == "Ryzen 7 5800X3D")
+            cfg = created.filter_config()
+            self.assertEqual(cfg["exclude"], ["cooler", "kit upgrade", "pc gamer"])
+            self.assertEqual(cfg["min_price"], 60000)
+
+        # min_price blocks R$ 150 cooler even without matching an exclude word
+        cheap_acc = Message(
+            "Canal",
+            52,
+            None,
+            "Suporte Ryzen 7 5800X3D\nR$ 150,00 no Pix\nhttps://meli.la/acc",
+            link="https://t.me/c/52",
+        )
+        self.assertEqual(
+            list(
+                watch.promo_matches(
+                    cheap_acc, "channel", [(created, watch.profile_for_alert(created))]
+                )
+            ),
+            [],
+        )
 
 
 if __name__ == "__main__":

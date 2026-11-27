@@ -82,7 +82,39 @@ COUPON_RE = re.compile(
     r"(?P<code>[A-Za-z0-9][A-Za-z0-9_-]{2,30})",
     re.IGNORECASE,
 )
-_COUPON_STOPWORDS = frozenset({"DESCONTO", "NO", "NA", "DE", "PARA", "APLICADO", "ABAIXO", "OFF"})
+_COUPON_STOPWORDS = frozenset(
+    {
+        "DESCONTO",
+        "NO",
+        "NA",
+        "DE",
+        "PARA",
+        "APLICADO",
+        "ABAIXO",
+        "OFF",
+        "RESGATE",
+        "ANUNCIO",
+        "LINK",
+        "SITE",
+        "APP",
+        "LOJA",
+        "APPLE",
+        "PIX",
+        "CARTAO",
+        "BOLETO",
+        "AQUI",
+        "VER",
+        "CLIQUE",
+        "SELECIONE",
+        "MOEDAS",
+        "CARRINHO",
+        "CHECKOUT",
+        "PAGINA",
+        "PRODUTO",
+        "OFERTA",
+        "CUPOM",
+    }
+)
 
 _CONTEXT = 30
 

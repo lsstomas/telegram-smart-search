@@ -341,12 +341,17 @@ def parse_terms(text: str) -> Terms:
         code = _coupon_ok(m.group("code"))
         if code and code not in codes:
             codes.append(code)
+    # Require uppercase in original text (or a digit) so plain words like "resgate" are rejected.
+    upper_tokens = {tok for tok in re.findall(r"[A-Z0-9][A-Z0-9_-]{2,30}", text)}
     for m in _NORM_COUPON_RE.finditer(norm):
         for group in ("code", "code2"):
             raw_code = m.group(group)
             if not raw_code:
                 continue
-            code = _coupon_ok(raw_code.upper())
+            cand = raw_code.upper()
+            if cand not in upper_tokens and not any(ch.isdigit() for ch in cand):
+                continue
+            code = _coupon_ok(cand)
             if code and code not in codes:
                 codes.append(code)
     terms.coupons = tuple(codes)

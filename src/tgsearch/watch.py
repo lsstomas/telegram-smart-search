@@ -274,8 +274,6 @@ def promo_payment(point: PricePoint) -> str:
 
 
 def promo_store(post: Post) -> str:
-    if post.store:
-        return post.store
     if post.url:
         parts = urlsplit(post.url)
         host = (parts.hostname or "").lower().removeprefix("www.")
@@ -297,8 +295,10 @@ def promo_store(post: Post) -> str:
         for suffix, name in (("-amazon", "amazon"), ("-mercadolivre", "mercadolivre")):
             if path.endswith(suffix):
                 return name
+        if post.store:
+            return post.store
         return host
-    return ""
+    return post.store or ""
 
 
 def profile_for_alert(alert: promo_menu.Alert) -> Profile:
@@ -376,6 +376,9 @@ def promo_matches(
             continue
         best = payments[0]
         price = promo_delivery.cents(best.amount)
+        min_price = int(cfg.get("min_price") or 0)
+        if min_price and price < min_price:
+            continue
         if price + (shipping or 0) > alert.ceiling:
             continue
         store_name = promo_store(post)
