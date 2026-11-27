@@ -259,6 +259,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     watch.add_argument("--state", type=Path, required=True, help="persistent SQLite database")
     _add_session(watch)
+    wlive = sub.add_parser("watch-live", help="stream selected chats in real time (1-3s delay)")
+    wlive.add_argument(
+        "--chat", action="append", required=True, help="group or channel, repeatable"
+    )
+    wlive.add_argument("--state", type=Path, required=True, help="persistent SQLite database")
+    _add_session(wlive)
     menu = sub.add_parser("promo-menu", help="serve the private PromoBot configuration menu")
     menu.add_argument("--state", type=Path, required=True, help="persistent SQLite database")
     menu.add_argument("--sources", type=Path, help="file with monitored channel IDs")
@@ -459,6 +465,15 @@ def _cmd_watch(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_watch_live(args: argparse.Namespace) -> int:
+    from asyncio import run
+
+    from .watch import run_live
+
+    run(run_live(args.chat, args.state, args.session))
+    return 0
+
+
 def _cmd_promo_menu(args: argparse.Namespace) -> int:
     import os
     import re
@@ -484,6 +499,7 @@ _LIVE_COMMANDS = {
     "scan": _cmd_scan,
     "gpu-fetch": _cmd_scan,
     "watch": _cmd_watch,
+    "watch-live": _cmd_watch_live,
     "promo-menu": _cmd_promo_menu,
 }
 

@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
+import signal
 import sqlite3
+import sys
+import time
 from collections.abc import Iterable, Iterator, Sequence
 from contextlib import closing, contextmanager
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -549,3 +553,227 @@ async def run(chats: Sequence[str], state: Path, session: Path | None) -> None:
             promo_delivery.deliver(db, bot)
         else:
             deliver(db, token, chat_id)
+
+
+RECONCILE_SECONDS = 600
+HEARTBEAT_INTERVAL = 15
+
+
+def _event_chat_id(message_obj: Any) -> int | None:
+    peer = getattr(message_obj, "peer_id", None)
+    if peer is None:
+        return None
+    for attr in ("channel_id", "chat_id"):
+        val = getattr(peer, attr, None)
+        if val is not None:
+            return int(val)
+    return None
+
+
+def _process_realtime_item(
+    db: sqlite3.Connection,
+    bot: promo_delivery.Bot,
+    entity: Any,
+    kind: str,
+    chat_key: str,
+    item: Any,
+) -> int:
+    """Process one incoming Telethon message against active alerts and deliver immediately."""
+    item_id = int(item.id)
+    row = db.execute("SELECT last_id FROM cursors WHERE chat = ?", (chat_key,)).fetchone()
+    last_id = row[0] if row else 0
+    if item_id <= last_id:
+        return 0
+    message = to_message(entity, item)
+    targets = [(a, profile_for_alert(a)) for a in promo_menu.alerts(db, active_only=True)]
+    offers = list(promo_matches(message, kind, targets)) if message else []
+    with db:
+        for offer in offers:
+            promo_delivery.enqueue(db, offer)
+        db.execute("INSERT OR REPLACE INTO cursors VALUES (?, ?)", (chat_key, item_id))
+    if offers:
+        promo_delivery.deliver(db, bot)
+        for offer in offers:
+            print(
+                f"watch-live delivered: {offer.title} ({promo_delivery.money(offer.price)}) "
+                f"from {message.chat if message else chat_key}",
+                flush=True,
+            )
+    return len(offers)
+
+
+async def _catchup_monitored(
+    client: Any,
+    db: sqlite3.Connection,
+    monitored: dict[int, tuple[Any, str, str]],
+    bot: promo_delivery.Bot,
+) -> None:
+    targets = [(a, profile_for_alert(a)) for a in promo_menu.alerts(db, active_only=True)]
+    enqueued = 0
+    for entity, kind, chat_key in monitored.values():
+        row = db.execute("SELECT last_id FROM cursors WHERE chat = ?", (chat_key,)).fetchone()
+        chat_offers: list[promo_delivery.Offer] = []
+        if row is None:
+            latest = await client.get_messages(entity, limit=1)
+            last_id = latest[0].id if latest else 0
+        else:
+            last_id = row[0]
+            async for item in client.iter_messages(entity, min_id=last_id, reverse=True):
+                last_id = max(last_id, item.id)
+                message = to_message(entity, item)
+                if message:
+                    chat_offers.extend(promo_matches(message, kind, targets))
+        with db:
+            for offer in chat_offers:
+                promo_delivery.enqueue(db, offer)
+            db.execute("INSERT OR REPLACE INTO cursors VALUES (?, ?)", (chat_key, last_id))
+        enqueued += len(chat_offers)
+    if enqueued or db.execute("SELECT 1 FROM promo_outbox LIMIT 1").fetchone():
+        promo_delivery.deliver(db, bot)
+
+
+async def _handle_job(
+    client: Any,
+    db: sqlite3.Connection,
+    job_id: int,
+    kind: str,
+    payload: dict,
+) -> None:
+    from . import promo_history, promo_jobs
+
+    try:
+        raw_src = payload.get("sources_file") or ""
+        sources_file = Path(raw_src) if raw_src else None
+        if kind == "history":
+            wanted_ids = set(payload.get("alert_ids") or [])
+            selected = [a for a in promo_menu.alerts(db) if a.id in wanted_ids]
+            hours = int(payload.get("hours") or 24)
+            entries = await promo_history.fetch_history_with_client(
+                client, selected, hours, sources_file
+            )
+            promo_jobs.complete(db, job_id, {"entries": [e.to_dict() for e in entries]})
+        elif kind == "channels":
+            chans = await promo_history.fetch_channels_with_client(client, sources_file)
+            promo_jobs.complete(db, job_id, {"channels": [asdict(c) for c in chans]})
+        else:
+            promo_jobs.fail(db, job_id, f"Tipo de job desconhecido: {kind}")
+    except Exception as exc:
+        print(f"watch-live job {job_id} ({kind}) error: {exc}", file=sys.stderr, flush=True)
+        promo_jobs.fail(db, job_id, str(exc))
+
+
+async def run_live(chats: Sequence[str], state: Path, session: Path | None) -> None:
+    """Keep one Telethon connection open and deliver qualifying offers in real time (1-3s)."""
+    from telethon import events
+
+    from . import promo_jobs
+
+    token = os.environ.get("TGSEARCH_PROMOBOT_TOKEN", "")
+    chat_id = os.environ.get("TGSEARCH_BOT_CHAT_ID", "")
+    if not re.fullmatch(r"[0-9]+:[A-Za-z0-9_-]+", token) or not re.fullmatch(
+        r"[1-9][0-9]*", chat_id
+    ):
+        raise LiveConfigError("set TGSEARCH_PROMOBOT_TOKEN and TGSEARCH_BOT_CHAT_ID")
+    state.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+
+    with _scan_lock(state), closing(sqlite3.connect(state, timeout=30)) as db:
+        promo_delivery.configure_db(db)
+        db.executescript(SCHEMA)
+        db.executescript(promo_delivery.SCHEMA)
+        promo_jobs.init(db)
+        bot = promo_delivery.Bot(token, int(chat_id))
+        promo_delivery.deliver(db, bot)
+
+        stop_event = asyncio.Event()
+        loop = asyncio.get_running_loop()
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            try:
+                loop.add_signal_handler(sig, stop_event.set)
+            except NotImplementedError:
+                pass
+
+        async with open_client(resolve(), session or default_session_path()) as client:
+            monitored: dict[int, tuple[Any, str, str]] = {}
+            for chat in chats:
+                entity = await client.get_entity(coerce_chat(chat))
+                kind = chat_kind(entity)
+                if kind == "user":
+                    raise LiveConfigError("--chat must identify a Telegram group or channel")
+                chat_key = f"{'group' if kind == 'group' else 'channel'}:{entity.id}"
+                monitored[int(entity.id)] = (entity, kind, chat_key)
+
+            print(
+                f"watch-live online: monitoring {len(monitored)} chats in real time",
+                flush=True,
+            )
+            await _catchup_monitored(client, db, monitored, bot)
+            promo_jobs.touch_heartbeat(db)
+
+            delivery_lock = asyncio.Lock()
+
+            @client.on(events.NewMessage())
+            async def _on_new_message(event: Any) -> None:
+                cid = _event_chat_id(event.message)
+                if cid is None or cid not in monitored:
+                    return
+                entity, kind, chat_key = monitored[cid]
+                async with delivery_lock:
+                    try:
+                        _process_realtime_item(db, bot, entity, kind, chat_key, event.message)
+                    except Exception as exc:
+                        print(f"watch-live event error: {exc}", file=sys.stderr, flush=True)
+
+            async def _background_loop() -> None:
+                last_beat = time.monotonic()
+                last_reconcile = time.monotonic()
+                while not stop_event.is_set():
+                    now_mono = time.monotonic()
+                    if now_mono - last_beat >= HEARTBEAT_INTERVAL:
+                        try:
+                            promo_jobs.touch_heartbeat(db)
+                        except sqlite3.OperationalError as exc:
+                            print(f"watch-live heartbeat error: {exc}", file=sys.stderr, flush=True)
+                        last_beat = now_mono
+
+                    job = promo_jobs.claim_next(db)
+                    if job is not None:
+                        job_id, job_kind, payload = job
+                        await _handle_job(client, db, job_id, job_kind, payload)
+                        continue
+
+                    if now_mono - last_reconcile >= RECONCILE_SECONDS:
+                        async with delivery_lock:
+                            try:
+                                await _catchup_monitored(client, db, monitored, bot)
+                            except Exception as exc:
+                                print(
+                                    f"watch-live reconcile error: {exc}",
+                                    file=sys.stderr,
+                                    flush=True,
+                                )
+                        last_reconcile = time.monotonic()
+
+                    try:
+                        await asyncio.wait_for(stop_event.wait(), timeout=0.2)
+                    except asyncio.TimeoutError:
+                        pass
+
+            bg_task = asyncio.create_task(_background_loop())
+            disconnect_task = asyncio.create_task(client.run_until_disconnected())
+            stop_task = asyncio.create_task(stop_event.wait())
+            try:
+                done, pending = await asyncio.wait(
+                    {bg_task, disconnect_task, stop_task},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                stop_event.set()
+                for task in pending:
+                    task.cancel()
+                await asyncio.gather(*pending, return_exceptions=True)
+                for task in done:
+                    if not task.cancelled():
+                        exc = task.exception()
+                        if exc is not None:
+                            raise exc
+            finally:
+                promo_jobs.clear_heartbeat(db)

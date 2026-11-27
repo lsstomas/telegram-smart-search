@@ -510,6 +510,62 @@ class PromoBotTests(unittest.TestCase):
             [],
         )
 
+    def test_realtime_event_processing_and_job_queue(self):
+        from types import SimpleNamespace
+
+        from tgsearch import promo_jobs
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "live.sqlite3"
+            with sqlite3.connect(db_path) as db:
+                db.executescript(watch.SCHEMA)
+                db.executescript(promo_delivery.SCHEMA)
+                promo_jobs.init(db)
+                promo_menu.init(db, seed_defaults=True)
+
+                # Simulate incoming real-time message in a monitored channel
+                entity = SimpleNamespace(
+                    id=555, broadcast=True, username="ofertas", title="Ofertas"
+                )
+                item = SimpleNamespace(
+                    id=100,
+                    message=(
+                        "iPhone 17 256 GB Preto\nR$ 4.399,00 no Pix\n"
+                        "Cupom MADRUXPTMANA\nhttps://meli.la/abc"
+                    ),
+                )
+                count = watch._process_realtime_item(
+                    db, self.bot, entity, "channel", "channel:555", item
+                )
+                self.assertEqual(count, 1)
+                self.assertEqual(
+                    db.execute("SELECT last_id FROM cursors WHERE chat = 'channel:555'").fetchone(),
+                    (100,),
+                )
+                # Duplicate same item_id is ignored
+                self.assertEqual(
+                    watch._process_realtime_item(
+                        db, self.bot, entity, "channel", "channel:555", item
+                    ),
+                    0,
+                )
+
+                # Heartbeat + job queue lifecycle
+                self.assertFalse(promo_jobs.is_live_watcher_active(db))
+                promo_jobs.touch_heartbeat(db)
+                self.assertTrue(promo_jobs.is_live_watcher_active(db))
+                db.execute(
+                    "INSERT INTO promo_jobs (kind, payload, status, created_at) "
+                    "VALUES ('channels', '{}', 'pending', 9999999999)"
+                )
+                db.commit()
+                job_id, kind, payload = promo_jobs.claim_next(db)
+                self.assertEqual((kind, payload), ("channels", {}))
+                promo_jobs.complete(db, job_id, {"channels": []})
+                self.assertIsNone(promo_jobs.claim_next(db))
+                promo_jobs.clear_heartbeat(db)
+                self.assertFalse(promo_jobs.is_live_watcher_active(db))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -374,11 +374,11 @@ def render_channels(channels: Sequence[ChannelEntry]) -> list[str]:
     return messages
 
 
-async def _fetch_history(
+async def fetch_history_with_client(
+    client,
     alerts: Sequence[promo_menu.Alert],
     hours: int,
     sources_file: Path | None,
-    session: Path | None,
 ) -> list[HistoryEntry]:
     since = datetime.now(timezone.utc) - timedelta(hours=hours)
     source_ids = load_source_ids(sources_file)
@@ -399,65 +399,81 @@ async def _fetch_history(
 
     seen_msgs: set[tuple[int, int]] = set()
     entries: list[HistoryEntry] = []
-    async with open_client(resolve(), session or default_session_path()) as client:
-        for query in queries:
-            async for item in client.iter_messages(None, search=query, limit=limit):
-                if item.date and item.date < since:
-                    break
-                if getattr(item, "is_private", False):
-                    continue
-                entity = await item.get_chat()
-                if entity is None:
-                    continue
-                kind = chat_kind(entity)
-                if kind == "user":
-                    continue
-                if source_ids and entity.id not in source_ids:
-                    continue
-                uid = (entity.id, item.id)
-                if uid in seen_msgs:
-                    continue
-                seen_msgs.add(uid)
-                message = to_message(entity, item)
-                if not message:
-                    continue
-                seen_at = item.date or datetime.now(timezone.utc)
-                for offer in watch.promo_matches(message, kind, high_targets):
-                    product = json.loads(offer.key)[0]
-                    ceiling = real_ceilings.get(product, 0)
-                    total = offer.price + (offer.shipping or 0)
-                    entries.append(
-                        HistoryEntry(
-                            offer=offer,
-                            seen_at=seen_at,
-                            within_ceiling=total <= ceiling,
-                            alert_ceiling=ceiling,
-                        )
+    for query in queries:
+        async for item in client.iter_messages(None, search=query, limit=limit):
+            if item.date and item.date < since:
+                break
+            if getattr(item, "is_private", False):
+                continue
+            entity = await item.get_chat()
+            if entity is None:
+                continue
+            kind = chat_kind(entity)
+            if kind == "user":
+                continue
+            if source_ids and entity.id not in source_ids:
+                continue
+            uid = (entity.id, item.id)
+            if uid in seen_msgs:
+                continue
+            seen_msgs.add(uid)
+            message = to_message(entity, item)
+            if not message:
+                continue
+            seen_at = item.date or datetime.now(timezone.utc)
+            for offer in watch.promo_matches(message, kind, high_targets):
+                product = json.loads(offer.key)[0]
+                ceiling = real_ceilings.get(product, 0)
+                total = offer.price + (offer.shipping or 0)
+                entries.append(
+                    HistoryEntry(
+                        offer=offer,
+                        seen_at=seen_at,
+                        within_ceiling=total <= ceiling,
+                        alert_ceiling=ceiling,
                     )
+                )
     return entries
+
+
+async def fetch_channels_with_client(
+    client,
+    sources_file: Path | None,
+) -> list[ChannelEntry]:
+    raw_sources = read_sources(sources_file)
+    if not raw_sources:
+        return []
+    result: list[ChannelEntry] = []
+    for raw in raw_sources:
+        try:
+            entity = await client.get_entity(coerce_chat(raw))
+            title = chat_name(entity)
+            username = getattr(entity, "username", None) or ""
+            kind = chat_kind(entity)
+        except Exception:
+            title = raw
+            username = ""
+            kind = "channel"
+        result.append(ChannelEntry(raw=raw, title=title, username=username, kind=kind))
+    return sorted(result, key=lambda c: clean_channel_label(c.title).casefold())
+
+
+async def _fetch_history(
+    alerts: Sequence[promo_menu.Alert],
+    hours: int,
+    sources_file: Path | None,
+    session: Path | None,
+) -> list[HistoryEntry]:
+    async with open_client(resolve(), session or default_session_path()) as client:
+        return await fetch_history_with_client(client, alerts, hours, sources_file)
 
 
 async def _fetch_channels(
     sources_file: Path | None,
     session: Path | None,
 ) -> list[ChannelEntry]:
-    raw_sources = read_sources(sources_file)
-    if not raw_sources:
-        return []
-    result: list[ChannelEntry] = []
     async with open_client(resolve(), session or default_session_path()) as client:
-        for raw in raw_sources:
-            try:
-                entity = await client.get_entity(coerce_chat(raw))
-                title = chat_name(entity)
-                username = getattr(entity, "username", None) or ""
-                kind = chat_kind(entity)
-            except Exception:
-                title = raw
-                username = ""
-                kind = "channel"
-            result.append(ChannelEntry(raw=raw, title=title, username=username, kind=kind))
-    return sorted(result, key=lambda c: clean_channel_label(c.title).casefold())
+        return await fetch_channels_with_client(client, sources_file)
 
 
 def search_history(
@@ -468,8 +484,21 @@ def search_history(
     sources_file: Path | None = None,
     session: Path | None = None,
 ) -> list[HistoryEntry]:
-    """Run an on-demand Telegram history search safely serialized with watch.py."""
+    """Run an on-demand Telegram history search (via watch-live if running, else direct)."""
+    from . import promo_jobs
+
     resolved = resolve_sources_file(sources_file)
+    delegated = promo_jobs.submit_and_wait(
+        state,
+        "history",
+        {
+            "alert_ids": [a.id for a in alerts],
+            "hours": hours,
+            "sources_file": str(resolved) if resolved else "",
+        },
+    )
+    if delegated is not None:
+        return [HistoryEntry.from_dict(item) for item in delegated.get("entries", [])]
     with watch._scan_lock(state):
         return asyncio.run(_fetch_history(alerts, hours, resolved, session))
 
@@ -480,7 +509,16 @@ def list_monitored_channels(
     sources_file: Path | None = None,
     session: Path | None = None,
 ) -> list[ChannelEntry]:
-    """Resolve names and links for all monitored channels, serialized with watch.py."""
+    """Resolve names and links for all monitored channels (via watch-live if running)."""
+    from . import promo_jobs
+
     resolved = resolve_sources_file(sources_file)
+    delegated = promo_jobs.submit_and_wait(
+        state,
+        "channels",
+        {"sources_file": str(resolved) if resolved else ""},
+    )
+    if delegated is not None:
+        return [ChannelEntry(**item) for item in delegated.get("channels", [])]
     with watch._scan_lock(state):
         return asyncio.run(_fetch_channels(resolved, session))
