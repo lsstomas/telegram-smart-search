@@ -29,7 +29,9 @@ class FakeBot:
 
 class PromoBotTests(unittest.TestCase):
     def setUp(self):
-        self._ai_patch = mock.patch.dict(os.environ, {"TGSEARCH_DISABLE_AI": "1"})
+        self._ai_patch = mock.patch.dict(
+            os.environ, {"TGSEARCH_DISABLE_AI": "1", "NTFY_ENABLED": "0"}
+        )
         self._ai_patch.start()
         self.addCleanup(self._ai_patch.stop)
         self.db = sqlite3.connect(":memory:")
@@ -628,6 +630,25 @@ class PromoBotTests(unittest.TestCase):
         )
         card = promo_history.format_offer_card(entry, best=True, show_title=False)
         self.assertIn("📦 Memória XPG Lancer Blade 16GB 6000MHz DDR5 RGB White", card)
+
+    def test_ntfy_fires_only_on_new_alerts_not_on_edits(self):
+        sent = []
+        with mock.patch.object(
+            promo_delivery, "notify_ntfy", side_effect=lambda o, prev: sent.append((o.price, prev))
+        ):
+            self.accept(0, 1)  # new alert -> ntfy fires
+            self.accept(600, 2)  # edit within 1h -> ntfy must NOT fire
+            self.accept(
+                1200, 3, price=138900, payments=["R$ 1.389,00 no Pix"]
+            )  # R$10 drop -> fires
+        self.assertEqual(sent, [(139900, None), (138900, 139900)])
+        payload = promo_delivery.build_ntfy_payload(
+            self.offer, 149900, topic="test-topic", priority=5
+        )
+        self.assertEqual(payload["priority"], 5)
+        self.assertIn("Caiu R$ 100,00", payload["title"])
+        self.assertEqual(payload["click"], "https://example.com/produto")
+        self.assertEqual(len(payload["actions"]), 2)
 
 
 if __name__ == "__main__":

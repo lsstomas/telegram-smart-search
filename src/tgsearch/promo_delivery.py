@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import sqlite3
+import sys
 import unicodedata
 from dataclasses import asdict, dataclass, field
 from decimal import Decimal
@@ -303,6 +305,98 @@ def deliver_offer(db: sqlite3.Connection, bot: Bot, offer: Offer, now: int) -> N
     save_notice(db, bot, current, now, message_id=message_id, previous=previous_price)
 
 
+NTFY_PRIORITIES = {"min": 1, "low": 2, "default": 3, "high": 4, "urgent": 5, "max": 5}
+
+
+def _ntfy_priority(raw: str) -> int:
+    val = raw.strip().casefold()
+    if val.isdigit():
+        return max(1, min(5, int(val)))
+    return NTFY_PRIORITIES.get(val, 4)
+
+
+def build_ntfy_payload(
+    offer: Offer,
+    previous: int | None,
+    *,
+    topic: str,
+    priority: int = 5,
+) -> dict:
+    if previous is not None:
+        title = f"Caiu {money(previous - offer.price)}: {offer.title} · {money(offer.price)}"
+        tags = ["chart_with_downwards_trend", "zap"]
+    elif offer.restocked:
+        title = f"Voltou: {offer.title} · {money(offer.price)}"
+        tags = ["arrows_counterclockwise", "zap"]
+    else:
+        title = f"{offer.title} · {money(offer.price)}"
+        tags = ["zap", "moneybag"]
+
+    lines: list[str] = []
+    if offer.item_name and offer.item_name.casefold() != offer.title.casefold():
+        lines.append(offer.item_name[:120])
+    if offer.store:
+        lines.append(f"Loja: {store_display(offer.store)}")
+    if offer.seller:
+        lines.append(f"Vendido por: {offer.seller[:80]}")
+    if previous is not None:
+        lines.append(f"Antes: {money(previous)}")
+    if offer.payment_method and offer.payment_method != "Não informada":
+        lines.append(f"Pagamento: {offer.payment_method}")
+    if offer.installments:
+        lines.append(f"Parcelas: {offer.installments}")
+    if offer.coupons:
+        lines.append(f"Cupom: {', '.join(offer.coupons)}")
+    if offer.shipping is not None:
+        lines.append(f"Frete: {money(offer.shipping) if offer.shipping else 'grátis'}")
+
+    actions: list[dict] = []
+    click_url = ""
+    if offer.buy_url and valid_url(offer.buy_url):
+        click_url = offer.buy_url
+        actions.append({"action": "view", "label": "Abrir oferta", "url": offer.buy_url})
+    first_post = next((u for u in offer.posts if valid_url(u)), "")
+    if first_post:
+        if not click_url:
+            click_url = first_post
+        actions.append({"action": "view", "label": "Ver post", "url": first_post})
+
+    payload: dict = {
+        "topic": topic,
+        "title": title[:140],
+        "message": "\n".join(lines) or money(offer.price),
+        "priority": priority,
+        "tags": tags,
+    }
+    if click_url:
+        payload["click"] = click_url
+    if actions:
+        payload["actions"] = actions
+    return payload
+
+
+def notify_ntfy(offer: Offer, previous: int | None) -> None:
+    """Send an optional best-effort ntfy push notification; never raises or leaks secrets."""
+    if os.getenv("NTFY_ENABLED", "").strip() != "1":
+        return
+    base_url = os.getenv("NTFY_URL", "").strip().rstrip("/")
+    topic = (os.getenv("TGSEARCH_NTFY_TOPIC") or os.getenv("NTFY_TOPIC") or "").strip()
+    if not base_url or not topic or not valid_url(base_url):
+        return
+    priority = _ntfy_priority(os.getenv("TGSEARCH_NTFY_PRIORITY", "urgent"))
+    payload = build_ntfy_payload(offer, previous, topic=topic, priority=priority)
+    request = Request(
+        base_url,
+        data=json.dumps(payload, ensure_ascii=False).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urlopen(request, timeout=8) as response:
+            response.read(256)
+    except Exception as exc:
+        print(f"promo_delivery ntfy warning: {type(exc).__name__}", file=sys.stderr, flush=True)
+
+
 def save_notice(
     db: sqlite3.Connection,
     bot: Bot,
@@ -312,6 +406,7 @@ def save_notice(
     message_id: int | None = None,
     previous: int | None = None,
 ) -> None:
+    original_message_id = message_id
     text = render(offer, previous)
     options: dict = {"parse_mode": "HTML", "link_preview_options": {"is_disabled": True}}
     markup = buy_markup(offer)
@@ -331,7 +426,10 @@ def save_notice(
     else:
         if message_id is None:
             message_id = result["message_id"]
+    is_new_notice = original_message_id is None
     db.execute(
         "INSERT OR REPLACE INTO promo_notice VALUES (?, ?, ?, ?, ?, ?)",
         (offer.key, message_id, now, offer.price, previous, json.dumps(asdict(offer))),
     )
+    if is_new_notice:
+        notify_ntfy(offer, previous)
